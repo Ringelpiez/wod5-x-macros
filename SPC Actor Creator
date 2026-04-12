@@ -1,0 +1,799 @@
+// WoD5e SPC Actor Creator Makro – V3.2
+// FoundryVTT V13 | System: wod5e 5.3.x
+
+(async () => {
+
+  const AppV2 = foundry.applications.api.ApplicationV2;
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // DIALOG-ENGINE
+  // ═══════════════════════════════════════════════════════════════════════════
+  function showStep(title, bodyHtml, { showBack = false, nextLabel = "Weiter →" } = {}) {
+    return new Promise((resolve) => {
+
+      class StepDialog extends AppV2 {
+        static DEFAULT_OPTIONS = {
+          id: `wod-step-${Date.now()}`,
+          tag: "div",
+          window: { title, resizable: true },
+          position: { width: 580 },
+        };
+
+        async _renderHTML(_context, _options) {
+          const wrap = document.createElement("div");
+          wrap.innerHTML = `
+            ${baseStyle}
+            <div class="wf" style="padding:0 2px;">
+              ${bodyHtml}
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;
+                        gap:8px;margin-top:14px;padding-top:10px;
+                        border-top:1px solid var(--color-border-light-primary,#aaa);">
+              <div>
+                ${showBack
+                  ? `<button type="button" id="wod-btn-back" style="min-width:90px;">← Zurück</button>`
+                  : ""}
+              </div>
+              <div style="display:flex;gap:8px;">
+                <button type="button" id="wod-btn-cancel" style="min-width:90px;">Abbrechen</button>
+                <button type="button" id="wod-btn-next"
+                  style="min-width:130px;font-weight:bold;">${nextLabel}</button>
+              </div>
+            </div>`;
+          return wrap;
+        }
+
+        _replaceHTML(result, content, _options) {
+          content.replaceChildren(result);
+          content.querySelector("#wod-btn-next")?.addEventListener("click", () => {
+            const snapshot = $(this.element);
+            this.close({ animate: false });
+            resolve({ html: snapshot, action: "next" });
+          });
+          content.querySelector("#wod-btn-back")?.addEventListener("click", () => {
+            this.close({ animate: false });
+            resolve({ html: null, action: "back" });
+          });
+          content.querySelector("#wod-btn-cancel")?.addEventListener("click", () => {
+            this.close({ animate: false });
+            resolve({ html: null, action: "cancel" });
+          });
+        }
+
+        _onClose(_options) {
+          resolve({ html: null, action: "cancel" });
+        }
+      }
+
+      new StepDialog().render(true);
+    });
+  }
+
+  // ─── Basis-CSS ─────────────────────────────────────────────────────────────
+  const baseStyle = `
+    <style>
+      .wf label         { display:block; margin-top:7px; font-weight:bold;
+                          font-size:0.82em; color:var(--color-text-dark-secondary,#555); }
+      .wf input, .wf select, .wf textarea
+                        { width:100%; box-sizing:border-box; margin-top:2px; }
+      .wf textarea      { resize:vertical; }
+      .wf h3            { border-bottom:1px solid var(--color-border-light-primary,#aaa);
+                          margin:14px 0 4px; font-size:0.95em; }
+      .wf .g2           { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+      .wf .g3           { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
+      .wf .g4           { display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6px; }
+      .wf .cb-row       { display:flex; align-items:center; gap:6px; margin-top:8px; }
+      .wf .cb-row input { width:auto; margin:0; }
+      .wf .cb-row label { font-weight:normal; margin:0; }
+      .wf .hint         { font-size:0.82em; color:var(--color-text-dark-secondary,#666);
+                          margin-bottom:4px; line-height:1.5; }
+      .wf code          { background:var(--color-bg-option,#eee); padding:1px 4px;
+                          border-radius:3px; font-size:0.9em; }
+    </style>`;
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // TEXT-PARSER
+  // ═══════════════════════════════════════════════════════════════════════════
+  function parseStatBlock(raw) {
+    const result = {
+      name: "", spcType: "mortal", concept: "", group: "",
+      chronicle: "", ambition: "", desire: "",
+      notes: "", privatenotes: "", appearance: "",
+      description: "", equipment: "", history: "",
+      trueage: "", apparent: "", birth: "", death: "",
+      locked: true,
+      healthMax: 3, healthSup: 0, healthAgg: 0,
+      wpMax: 3, wpSup: 0, wpAgg: 0,
+      physical: 1, social: 1, mental: 1,
+      diffStrongest: 2, diffNormal: 1,
+      xpTotal: 0, xpRemaining: 0,
+      potency: 0, generation: "", hunger: 1,
+      humanity: 7, stains: 0, sire: "", domitor: "",
+      rage: 1, activeForm: "homid", crinosMax: 4,
+      glory: 0, honor: 0, wisdom: 0, harano: 0, hauglosk: 0,
+      despair: 0, desperation: 0, cellname: "", creedfields: "",
+      skills: {},
+    };
+
+    if (!raw.trim()) return result;
+
+    const lines = raw.split("\n").map(l => l.trim()).filter(Boolean);
+
+    const skillMap = {
+      "leadership":"leadership", "subterfuge":"subterfuge", "performance":"performance",
+      "larceny":"larceny", "intimidation":"intimidation", "insight":"insight",
+      "investigation":"investigation", "etiquette":"etiquette", "drive":"drive",
+      "finance":"finance", "academics":"academics", "brawl":"brawl",
+      "craft":"craft", "crafts":"craft", "stealth":"stealth", "medicine":"medicine",
+      "melee":"melee", "science":"science", "occult":"occult", "politics":"politics",
+      "firearms":"firearms", "athletics":"athletics", "streetwise":"streetwise",
+      "technology":"technology", "animalken":"animalken", "animal ken":"animalken",
+      "survival":"survival", "persuasion":"persuasion", "awareness":"awareness",
+    };
+
+    const typeMap = {
+      "mortal":"mortal", "human":"mortal", "sterblich":"mortal",
+      "vampire":"vampire", "vampir":"vampire",
+      "ghoul":"ghoul", "ghul":"ghoul",
+      "werewolf":"werewolf", "werwolf":"werewolf",
+      "hunter":"hunter", "jäger":"hunter",
+    };
+
+    const toInt = (s, fallback = 0) => parseInt((s || "").replace(/[^\d]/g, "")) || fallback;
+
+    // ── Feldpräfix-Erkennung ───────────────────────────────────────────────
+    // Alles was wie eine strukturierte Zeile aussieht
+    const isFieldLine = (line) =>
+      /^(general diff|standard dice|secondary attr|exceptional dice|notes\b|other traits\b|health\s*[:=]|willpower\s*[:=]|hunger\s*[:=]|humanity\s*[:=]|rage\s*[:=]|blood potency\s*[:=]|generation\s*[:=]|sire\s*[:=])/i
+      .test(line);
+
+    // ── Phase 1: Name = erste Zeile die kein Feld ist ──────────────────────
+    let nameIdx = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (!isFieldLine(lines[i])) {
+        result.name = lines[i].replace(/^[-–—*#]+\s*/, "").trim();
+        nameIdx = i;
+        break;
+      }
+    }
+
+    // Typ aus Name ableiten
+    const nl = result.name.toLowerCase();
+    for (const [k, v] of Object.entries(typeMap)) {
+      if (nl.includes(k)) { result.spcType = v; break; }
+    }
+
+    // ── Phase 2: Text ZWISCHEN Name und erster Feldzeile → privatenotes ───
+    // Sammle alle Zeilen nach dem Namen bis zur ersten Feldzeile
+    const introLines = [];
+    if (nameIdx >= 0) {
+      for (let i = nameIdx + 1; i < lines.length; i++) {
+        if (isFieldLine(lines[i])) break;        // erste Feldzeile → Stop
+        introLines.push(lines[i]);
+      }
+    }
+
+    // ── Phase 3: Alle Feldzeilen parsen ───────────────────────────────────
+    const notesLines = [];
+    let inNotes = false;
+
+    for (const line of lines) {
+      // Name und Intro-Zeilen überspringen
+      if (line === result.name) continue;
+      if (introLines.includes(line) && !isFieldLine(line)) continue;
+
+      const lo = line.toLowerCase();
+
+      // General Difficulty: 3 / 2 → 1. Wert = Strongest, 2. Wert = Normal
+      if (/general diff/i.test(lo)) {
+        inNotes = false;
+        const m = line.match(/(\d+)\s*[\/,]\s*(\d+)/);
+        if (m) {
+          result.diffStrongest = toInt(m[1], 2);
+          result.diffNormal    = toInt(m[2], 1);
+        } else {
+          const s = line.match(/:\s*(\d+)/);
+          if (s) result.diffStrongest = toInt(s[1], 2);
+        }
+        continue;
+      }
+
+      if (/standard dice/i.test(lo)) {
+        inNotes = false;
+        const ph = line.match(/physical\s+(\d+)/i);
+        const so = line.match(/social\s+(\d+)/i);
+        const me = line.match(/mental\s+(\d+)/i);
+        if (ph) result.physical = toInt(ph[1], 1);
+        if (so) result.social   = toInt(so[1], 1);
+        if (me) result.mental   = toInt(me[1], 1);
+        continue;
+      }
+
+      if (/secondary attr/i.test(lo)) {
+        inNotes = false;
+        const h = line.match(/health\s+(\d+)/i);
+        const w = line.match(/willpower\s+(\d+)/i);
+        if (h) result.healthMax = toInt(h[1], 3);
+        if (w) result.wpMax     = toInt(w[1], 3);
+        continue;
+      }
+
+      if (/^health\s*[:=]/i.test(line))    { inNotes=false; const m=line.match(/(\d+)/); if(m) result.healthMax=toInt(m[1],3); continue; }
+      if (/^willpower\s*[:=]/i.test(line)) { inNotes=false; const m=line.match(/(\d+)/); if(m) result.wpMax=toInt(m[1],3);     continue; }
+
+      // Exceptional Dice Pools – können über mehrere Zeilen gehen
+      // Erkennung: Zeile beginnt mit "Exceptional" ODER wir sind in einem
+      // laufenden Exceptional-Block (keine neue Feldzeile)
+      if (/exceptional dice/i.test(lo)) {
+        inNotes = false;
+        // Komplette Zeile(n) sammeln: Falls die Zeile mit Komma endet,
+        // könnten weitere Werte auf der nächsten Zeile stehen –
+        // das deckt der normale Loop ab, da Skill-Nummern erkannt werden.
+        const seg = line.replace(/^[^:]+:\s*/i, "");
+        _parseExceptional(seg, skillMap, result);
+        continue;
+      }
+
+      if (/^hunger\s*[:=]/i.test(line))       { inNotes=false; const m=line.match(/(\d+)/); if(m) result.hunger    =toInt(m[1],1); continue; }
+      if (/^humanity\s*[:=]/i.test(line))      { inNotes=false; const m=line.match(/(\d+)/); if(m) result.humanity  =toInt(m[1],7); continue; }
+      if (/^blood potency\s*[:=]/i.test(line)) { inNotes=false; const m=line.match(/(\d+)/); if(m) result.potency   =toInt(m[1],0); continue; }
+      if (/^generation\s*[:=]/i.test(line))    { inNotes=false; result.generation=line.replace(/^generation\s*[:=]\s*/i,"").trim(); continue; }
+      if (/^sire\s*[:=]/i.test(line))          { inNotes=false; result.sire=line.replace(/^sire\s*[:=]\s*/i,"").trim();             continue; }
+      if (/^rage\s*[:=]/i.test(line))          { inNotes=false; const m=line.match(/(\d+)/); if(m) result.rage      =toInt(m[1],1); continue; }
+
+      // Notes / Other Traits → privatenotes
+      if (/^notes\b|^other traits\b/i.test(line)) {
+        inNotes = true;
+        const rest = line.replace(/^[^:]+:\s*/i, "").trim();
+        if (rest) notesLines.push(rest);
+        continue;
+      }
+      if (inNotes) { notesLines.push(line); continue; }
+    }
+
+    // ── privatenotes zusammenbauen ─────────────────────────────────────────
+    // Intro-Text (zwischen Name und General Difficulty) wird als ein
+    // zusammenhängender Absatz gespeichert, Zeilenumbrüche zusammengeführt.
+    const privateParas = [];
+
+    if (introLines.length) {
+      // Fließtext: Zeilen zusammenführen (Bindestriche am Zeilenende entfernen)
+      const introText = introLines
+        .join(" ")
+        .replace(/- /g, "")        // Silbentrennung entfernen
+        .replace(/\s{2,}/g, " ")   // mehrfache Leerzeichen normalisieren
+        .trim();
+      if (introText) privateParas.push(`<p>${introText}</p>`);
+    }
+
+    if (notesLines.length) {
+      // Notes: Struktur erhalten – Absätze bei Leerzeilen oder
+      // bei Zeilen die mit einem Großbuchstaben + Doppelpunkt beginnen
+      // (z.B. "Riot Gear: …")
+      const noteText = _formatNotesAsHtml(notesLines);
+      if (noteText) privateParas.push(noteText);
+    }
+
+    result.privatenotes = privateParas.join("\n");
+    result.notes        = "";   // notes bleibt leer
+
+    return result;
+  }
+
+  // ── Hilfsfunktion: Exceptional Dice Pools parsen ──────────────────────────
+  function _parseExceptional(segment, skillMap, result) {
+    const pat = /([A-Za-z\s]+?)(?:\s*\([^)]*\))?\s+(\d+)(?=[,\s]|$)/g;
+    let m;
+    while ((m = pat.exec(segment)) !== null) {
+      const rs  = m[1].trim().toLowerCase();
+      const val = parseInt(m[2]) || 0;
+      const key = Object.keys(skillMap)
+        .filter(k => rs.includes(k))
+        .sort((a, b) => b.length - a.length)[0];
+      if (key) result.skills[skillMap[key]] = val;
+    }
+  }
+
+  // ── Hilfsfunktion: Notes-Zeilen als HTML formatieren ─────────────────────
+  // Erkennt Einträge der Form "Begriff: Text…" als eigene Absätze,
+  // führt übrige Zeilen als Fließtext zusammen.
+  function _formatNotesAsHtml(lines) {
+    if (!lines.length) return "";
+
+    const paras   = [];
+    let   current = [];
+
+    const flush = () => {
+      if (!current.length) return;
+      const text = current
+        .join(" ")
+        .replace(/- /g, "")
+        .replace(/\s{2,}/g, " ")
+        .trim();
+      if (text) paras.push(`<p>${text}</p>`);
+      current = [];
+    };
+
+    for (const line of lines) {
+      // Zeile beginnt mit "Wort(e): " → neuer Absatz
+      if (/^[A-ZÄÖÜ][^:]{1,40}:\s+\S/.test(line)) {
+        flush();
+        current.push(line);
+      } else {
+        current.push(line);
+      }
+    }
+    flush();
+
+    return paras.join("\n");
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // ZUSTAND
+  // ═══════════════════════════════════════════════════════════════════════════
+  const state = {
+    mode: "text",
+    rawText: "",
+    p: parseStatBlock(""),
+    d1: null, d2: null, d3: null, d4skills: null, d5: null,
+  };
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SCHRITT-DEFINITIONEN
+  // ═══════════════════════════════════════════════════════════════════════════
+  const STEPS = [
+
+    // ── 0: Modus ──────────────────────────────────────────────────────────
+    {
+      title: "SPC erstellen — Eingabemodus",
+      html: (s) => `
+        <h3>Wie möchtest du den Charakter erstellen?</h3>
+        <div class="cb-row" style="margin-top:12px;">
+          <input type="radio" name="mode" id="mode_text" value="text" ${s.mode==="text"?"checked":""} />
+          <label for="mode_text"><strong>Textblock einfügen</strong> — Stat-Block automatisch einlesen</label>
+        </div>
+        <div class="cb-row" style="margin-top:6px;">
+          <input type="radio" name="mode" id="mode_manual" value="manual" ${s.mode==="manual"?"checked":""} />
+          <label for="mode_manual"><strong>Manuell eingeben</strong> — Felder schrittweise ausfüllen</label>
+        </div>`,
+      collect: (html, s) => {
+        s.mode = html.find('[name="mode"]:checked').val() || "text";
+      },
+    },
+
+    // ── 1: Textblock einfügen ─────────────────────────────────────────────
+    {
+      title: "SPC erstellen — Textblock einfügen",
+      nextLabel: "Einlesen & Weiter →",
+      skip: (s) => s.mode !== "text",
+      html: (s) => `
+        <p class="hint">Füge den Stat-Block ein. Erkannte Felder werden automatisch vorbelegt.</p>
+        <p class="hint">
+          <code>General Difficulty: 3 / 2</code> → Strongest=3 / Normal=2<br>
+          <code>Standard Dice Pools: Physical 3, Social 4, Mental 4</code><br>
+          <code>Secondary Attributes: Health 5, Willpower 5</code><br>
+          <code>Exceptional Dice Pools: Persuasion (Sympathy) 6, Brawl 4</code><br>
+          <code>Notes / Other Traits: …</code><br>
+          Text zwischen Name und General Difficulty → Private Notizen<br>
+          Notes / Other Traits → ebenfalls Private Notizen (angehängt)
+        </p>
+        <label>Textblock</label>
+        <textarea name="rawtext" rows="14"
+          style="font-family:monospace;font-size:0.82em;"
+          placeholder="Hier einfügen …">${s.rawText}</textarea>`,
+      collect: (html, s) => {
+        s.rawText = html.find('[name="rawtext"]').val() || "";
+        if (!s.rawText.trim()) { ui.notifications.error("Kein Text eingegeben."); return false; }
+        s.p = parseStatBlock(s.rawText);
+      },
+    },
+
+    // ── 2: Grunddaten ──────────────────────────────────────────────────────
+    {
+      title: "SPC erstellen — 1/4: Grunddaten",
+      html: (s) => {
+        const d = s.d1 || s.p;
+        return `
+          <h3>Identität</h3>
+          <label>Name *</label>
+          <input type="text" name="name" value="${d.name||""}" placeholder="Charaktername" />
+          <div class="g2">
+            <div>
+              <label>Typ</label>
+              <select name="spcType">
+                <option value="mortal"   ${(d.spcType)==="mortal"   ?"selected":""}>Sterblicher (mortal)</option>
+                <option value="vampire"  ${(d.spcType)==="vampire"  ?"selected":""}>Vampir</option>
+                <option value="ghoul"    ${(d.spcType)==="ghoul"    ?"selected":""}>Ghul</option>
+                <option value="werewolf" ${(d.spcType)==="werewolf" ?"selected":""}>Werwolf</option>
+                <option value="hunter"   ${(d.spcType)==="hunter"   ?"selected":""}>Jäger</option>
+              </select>
+            </div>
+            <div>
+              <label>Gruppe</label>
+              <input type="text" name="group" value="${d.group||""}" placeholder="z.B. Coterie …" />
+            </div>
+          </div>
+          <div class="g2">
+            <div><label>Konzept</label>  <input type="text" name="concept"   value="${d.concept||""}"   /></div>
+            <div><label>Chronik</label>  <input type="text" name="chronicle" value="${d.chronicle||""}" /></div>
+            <div><label>Ambition</label> <input type="text" name="ambition"  value="${d.ambition||""}"  /></div>
+            <div><label>Begehren</label> <input type="text" name="desire"    value="${d.desire||""}"    /></div>
+          </div>
+          <h3>Optionen</h3>
+          <div class="cb-row">
+            <input type="checkbox" name="locked" id="cb_locked" ${(d.locked!==undefined?d.locked:true)?"checked":""} />
+            <label for="cb_locked">Charakter gesperrt (locked)</label>
+          </div>`;
+      },
+      collect: (html, s) => {
+        const name = html.find('[name="name"]').val().trim();
+        if (!name) { ui.notifications.error("Name ist ein Pflichtfeld."); return false; }
+        s.d1 = {
+          name,
+          spcType:   html.find('[name="spcType"]').val(),
+          group:     html.find('[name="group"]').val().trim(),
+          concept:   html.find('[name="concept"]').val().trim(),
+          chronicle: html.find('[name="chronicle"]').val().trim(),
+          ambition:  html.find('[name="ambition"]').val().trim(),
+          desire:    html.find('[name="desire"]').val().trim(),
+          locked:    html.find('[name="locked"]').is(":checked"),
+        };
+      },
+    },
+
+    // ── 3: Hintergrund & Texte ─────────────────────────────────────────────
+    {
+      title: "SPC erstellen — 2/4: Hintergrund & Texte",
+      html: (s) => {
+        const d = s.d2 || s.p;
+        return `
+          <h3>Biografie</h3>
+          <div class="g2">
+            <div><label>Wahres Alter</label>      <input type="text" name="trueage"  value="${d.trueage||""}"  /></div>
+            <div><label>Scheinbares Alter</label>  <input type="text" name="apparent" value="${d.apparent||""}" /></div>
+            <div><label>Geburtsdatum</label>       <input type="text" name="birth"    value="${d.birth||""}"    /></div>
+            <div><label>Todesdatum</label>         <input type="text" name="death"    value="${d.death||""}"    /></div>
+          </div>
+          <label>Geschichte / Hintergrund</label>
+          <textarea name="history"      rows="3">${d.history||""}</textarea>
+          <h3>Darstellung</h3>
+          <label>Aussehen</label>
+          <textarea name="appearance"   rows="2">${d.appearance||""}</textarea>
+          <label>Beschreibung</label>
+          <textarea name="description"  rows="2">${d.description||""}</textarea>
+          <label>Ausrüstung</label>
+          <textarea name="equipment"    rows="2">${d.equipment||""}</textarea>
+          <h3>Notizen</h3>
+          <label>Notizen (sichtbar)</label>
+          <textarea name="notes"        rows="2">${d.notes||""}</textarea>
+          <label>Private Notizen (nur SL)</label>
+          <textarea name="privatenotes" rows="5">${d.privatenotes||""}</textarea>`;
+      },
+      collect: (html, s) => {
+        s.d2 = {
+          trueage:      html.find('[name="trueage"]').val().trim(),
+          apparent:     html.find('[name="apparent"]').val().trim(),
+          birth:        html.find('[name="birth"]').val().trim(),
+          death:        html.find('[name="death"]').val().trim(),
+          history:      html.find('[name="history"]').val().trim(),
+          appearance:   html.find('[name="appearance"]').val().trim(),
+          description:  html.find('[name="description"]').val().trim(),
+          equipment:    html.find('[name="equipment"]').val().trim(),
+          notes:        html.find('[name="notes"]').val().trim(),
+          privatenotes: html.find('[name="privatenotes"]').val().trim(),
+        };
+      },
+    },
+
+    // ── 4: Ressourcen & Würfelpools ────────────────────────────────────────
+    {
+      title: "SPC erstellen — 3/4: Ressourcen & Würfelpools",
+      html: (s) => {
+        const d = s.d3 || s.p;
+        return `
+          <h3>Gesundheit</h3>
+          <div class="g3">
+            <div><label>Maximum</label>       <input type="number" name="healthMax" value="${d.healthMax??3}" min="1" max="20" /></div>
+            <div><label>Oberflächlich</label> <input type="number" name="healthSup" value="${d.healthSup??0}" min="0" max="20" /></div>
+            <div><label>Aggraviert</label>    <input type="number" name="healthAgg" value="${d.healthAgg??0}" min="0" max="20" /></div>
+          </div>
+          <h3>Willenskraft</h3>
+          <div class="g3">
+            <div><label>Maximum</label>       <input type="number" name="wpMax" value="${d.wpMax??3}" min="1" max="20" /></div>
+            <div><label>Oberflächlich</label> <input type="number" name="wpSup" value="${d.wpSup??0}" min="0" max="20" /></div>
+            <div><label>Aggraviert</label>    <input type="number" name="wpAgg" value="${d.wpAgg??0}" min="0" max="20" /></div>
+          </div>
+          <h3>Standard-Würfelpools</h3>
+          <div class="g3">
+            <div><label>Physisch</label> <input type="number" name="physical" value="${d.physical??1}" min="0" max="20" /></div>
+            <div><label>Sozial</label>   <input type="number" name="social"   value="${d.social??1}"   min="0" max="20" /></div>
+            <div><label>Mental</label>   <input type="number" name="mental"   value="${d.mental??1}"   min="0" max="20" /></div>
+          </div>
+          <h3>Allgemeine Schwierigkeit</h3>
+          <div class="g2">
+            <div><label>Stärkster Gegner (1. Wert)</label> <input type="number" name="diffStrongest" value="${d.diffStrongest??2}" min="0" max="10" /></div>
+            <div><label>Normal (2. Wert)</label>           <input type="number" name="diffNormal"    value="${d.diffNormal??1}"    min="0" max="10" /></div>
+          </div>
+          <h3>Erfahrungspunkte</h3>
+          <div class="g2">
+            <div><label>XP gesamt</label>    <input type="number" name="xpTotal"     value="${d.xpTotal??0}"     min="0" /></div>
+            <div><label>XP verfügbar</label> <input type="number" name="xpRemaining" value="${d.xpRemaining??0}" min="0" /></div>
+          </div>`;
+      },
+      collect: (html, s) => {
+        s.d3 = {
+          healthMax:     parseInt(html.find('[name="healthMax"]').val())     || 3,
+          healthSup:     parseInt(html.find('[name="healthSup"]').val())     || 0,
+          healthAgg:     parseInt(html.find('[name="healthAgg"]').val())     || 0,
+          wpMax:         parseInt(html.find('[name="wpMax"]').val())         || 3,
+          wpSup:         parseInt(html.find('[name="wpSup"]').val())         || 0,
+          wpAgg:         parseInt(html.find('[name="wpAgg"]').val())         || 0,
+          physical:      parseInt(html.find('[name="physical"]').val())      || 1,
+          social:        parseInt(html.find('[name="social"]').val())        || 1,
+          mental:        parseInt(html.find('[name="mental"]').val())        || 1,
+          diffStrongest: parseInt(html.find('[name="diffStrongest"]').val()) || 2,
+          diffNormal:    parseInt(html.find('[name="diffNormal"]').val())    || 1,
+          xpTotal:       parseInt(html.find('[name="xpTotal"]').val())       || 0,
+          xpRemaining:   parseInt(html.find('[name="xpRemaining"]').val())   || 0,
+        };
+      },
+    },
+
+    // ── 5: Exceptional Dice Pools ──────────────────────────────────────────
+    {
+      title: "SPC erstellen — 4/4: Exceptional Dice Pools",
+      html: (s) => {
+        const skillGroups = {
+          "Physisch": ["athletics","brawl","craft","drive","firearms","larceny","melee","stealth","survival"],
+          "Sozial":   ["animalken","etiquette","insight","intimidation","leadership","performance","persuasion","streetwise","subterfuge"],
+          "Mental":   ["academics","awareness","finance","investigation","medicine","occult","politics","science","technology"],
+        };
+        const skillLabels = {
+          athletics:"Athletik", brawl:"Kampf (waffenlos)", craft:"Handwerk",
+          drive:"Fahren", firearms:"Schusswaffen", larceny:"Diebstahl",
+          melee:"Nahkampf (bewaffnet)", stealth:"Heimlichkeit", survival:"Überleben",
+          animalken:"Tierumgang", etiquette:"Etikette", insight:"Einfühlungsvermögen",
+          intimidation:"Einschüchterung", leadership:"Führung", performance:"Auftreten",
+          persuasion:"Überzeugung", streetwise:"Straßenwissen", subterfuge:"Täuschung",
+          academics:"Akademisches", awareness:"Wahrnehmung", finance:"Finanzen",
+          investigation:"Ermittlung", medicine:"Medizin", occult:"Okkultismus",
+          politics:"Politik", science:"Naturwissenschaft", technology:"Technologie",
+        };
+        const savedSkills = s.d4skills || {};
+        let html = `<p class="hint">Wert &gt; 0 aktiviert den Pool automatisch.
+          <span style="color:#5a9;font-weight:bold;">●</span> = vom Text erkannt.</p>`;
+        for (const [cat, skills] of Object.entries(skillGroups)) {
+          html += `<h3>${cat}</h3><div class="g4">`;
+          for (const sk of skills) {
+            const preVal = savedSkills[sk] ?? s.p.skills[sk] ?? 0;
+            html += `<div>
+              <label>${skillLabels[sk]}${preVal>0?' <span style="color:#5a9;font-weight:bold;">●</span>':""}</label>
+              <input type="number" name="skill_${sk}" value="${preVal}" min="0" max="20" />
+            </div>`;
+          }
+          html += `</div>`;
+        }
+        return html;
+      },
+      collect: (html, s) => {
+        const allSkills = [
+          "athletics","brawl","craft","drive","firearms","larceny","melee","stealth","survival",
+          "animalken","etiquette","insight","intimidation","leadership","performance","persuasion","streetwise","subterfuge",
+          "academics","awareness","finance","investigation","medicine","occult","politics","science","technology",
+        ];
+        s.d4skills = {};
+        for (const sk of allSkills) {
+          s.d4skills[sk] = parseInt(html.find(`[name="skill_${sk}"]`).val()) || 0;
+        }
+      },
+    },
+
+    // ── 6: Typ-spezifisch + Bestätigung ───────────────────────────────────
+    {
+      title: "SPC erstellen — Typ-spezifisch & Bestätigung",
+      nextLabel: "✅ Charakter anlegen",
+      html: (s) => {
+        const spcType = s.d1?.spcType || "mortal";
+        const isV = ["vampire","ghoul"].includes(spcType);
+        const isW = spcType === "werewolf";
+        const isH = spcType === "hunter";
+        const p   = s.p;
+        const d3  = s.d3;
+
+        const vHtml = isV ? `
+          <h3>Vampir / Ghul</h3>
+          <div class="g2">
+            <div><label>Blutpotenz</label>       <input type="number" name="potency"    value="${p.potency}"    min="0" max="10" /></div>
+            <div><label>Generation</label>       <input type="text"   name="generation" value="${p.generation}"               /></div>
+            <div><label>Hunger (aktuell)</label> <input type="number" name="hunger"     value="${p.hunger}"     min="0" max="5"  /></div>
+            <div><label>Humanität</label>        <input type="number" name="humanity"   value="${p.humanity}"   min="0" max="10" /></div>
+            <div><label>Makel</label>            <input type="number" name="stains"     value="${p.stains}"     min="0" max="10" /></div>
+            <div><label>Sire</label>             <input type="text"   name="sire"       value="${p.sire}"                      /></div>
+            ${spcType==="ghoul"?`<div><label>Domitor</label><input type="text" name="domitor" value="${p.domitor}" /></div>`:""}
+          </div>` : "";
+
+        const wHtml = isW ? `
+          <h3>Werwolf</h3>
+          <div class="g2">
+            <div><label>Rage (aktuell)</label><input type="number" name="rage" value="${p.rage}" min="0" max="5" /></div>
+            <div>
+              <label>Aktive Form</label>
+              <select name="activeForm">
+                ${["homid","glabro","crinos","hispo","lupus"].map(f =>
+                  `<option value="${f}" ${p.activeForm===f?"selected":""}>${f.charAt(0).toUpperCase()+f.slice(1)}</option>`
+                ).join("")}
+              </select>
+            </div>
+            <div><label>Crinos Gesundheit Max</label><input type="number" name="crinosMax" value="${p.crinosMax}" min="1" max="20" /></div>
+          </div>
+          <h3>Renown</h3>
+          <div class="g3">
+            <div><label>Ruhm (Glory)</label>      <input type="number" name="glory"  value="${p.glory}"  min="0" max="5" /></div>
+            <div><label>Ehre (Honor)</label>      <input type="number" name="honor"  value="${p.honor}"  min="0" max="5" /></div>
+            <div><label>Weisheit (Wisdom)</label> <input type="number" name="wisdom" value="${p.wisdom}" min="0" max="5" /></div>
+          </div>
+          <h3>Balance</h3>
+          <div class="g2">
+            <div><label>Harano</label>   <input type="number" name="harano"   value="${p.harano}"   min="0" max="5" /></div>
+            <div><label>Hauglosk</label> <input type="number" name="hauglosk" value="${p.hauglosk}" min="0" max="5" /></div>
+          </div>` : "";
+
+        const hHtml = isH ? `
+          <h3>Jäger</h3>
+          <div class="g2">
+            <div><label>Despair</label>      <input type="number" name="despair"     value="${p.despair}"     min="0" max="5" /></div>
+            <div><label>Desperation</label>  <input type="number" name="desperation" value="${p.desperation}" min="0" max="5" /></div>
+            <div><label>Zelle</label>        <input type="text"   name="cellname"    value="${p.cellname}"                   /></div>
+            <div><label>Credo-Felder</label> <input type="text"   name="creedfields" value="${p.creedfields}"                /></div>
+          </div>` : "";
+
+        const noExtra = (!isV && !isW && !isH)
+          ? `<p class="hint">Für Typ <strong>${spcType}</strong> gibt es keine weiteren Felder.</p>` : "";
+
+        return `
+          ${noExtra}${vHtml}${wHtml}${hHtml}
+          <h3 style="margin-top:18px;">Zusammenfassung</h3>
+          <table style="width:100%;font-size:0.85em;border-collapse:collapse;">
+            <tr><td style="font-weight:bold;padding:2px 6px;">Name</td>         <td>${s.d1?.name||"–"}</td></tr>
+            <tr><td style="font-weight:bold;padding:2px 6px;">Typ</td>          <td>${spcType}</td></tr>
+            <tr><td style="font-weight:bold;padding:2px 6px;">Gesundheit</td>   <td>Max ${d3?.healthMax??3}</td></tr>
+            <tr><td style="font-weight:bold;padding:2px 6px;">Willenskraft</td> <td>Max ${d3?.wpMax??3}</td></tr>
+            <tr><td style="font-weight:bold;padding:2px 6px;">Pools</td>        <td>Phys ${d3?.physical??1} / Soz ${d3?.social??1} / Men ${d3?.mental??1}</td></tr>
+            <tr><td style="font-weight:bold;padding:2px 6px;">Difficulty</td>   <td>Strongest ${d3?.diffStrongest??2} / Normal ${d3?.diffNormal??1}</td></tr>
+            <tr><td style="font-weight:bold;padding:2px 6px;">Gesperrt</td>     <td>${s.d1?.locked?"Ja":"Nein"}</td></tr>
+          </table>`;
+      },
+      collect: (html, s) => {
+        s.d5 = {
+          potency:     parseInt(html.find('[name="potency"]').val())     || 0,
+          generation:  html.find('[name="generation"]').val()?.trim()   || "",
+          hunger:      parseInt(html.find('[name="hunger"]').val())      || 1,
+          humanity:    parseInt(html.find('[name="humanity"]').val())    || 7,
+          stains:      parseInt(html.find('[name="stains"]').val())      || 0,
+          sire:        html.find('[name="sire"]').val()?.trim()          || "",
+          domitor:     html.find('[name="domitor"]').val()?.trim()       || "",
+          rage:        parseInt(html.find('[name="rage"]').val())        || 1,
+          activeForm:  html.find('[name="activeForm"]').val()            || "homid",
+          crinosMax:   parseInt(html.find('[name="crinosMax"]').val())   || 4,
+          glory:       parseInt(html.find('[name="glory"]').val())       || 0,
+          honor:       parseInt(html.find('[name="honor"]').val())       || 0,
+          wisdom:      parseInt(html.find('[name="wisdom"]').val())      || 0,
+          harano:      parseInt(html.find('[name="harano"]').val())      || 0,
+          hauglosk:    parseInt(html.find('[name="hauglosk"]').val())    || 0,
+          despair:     parseInt(html.find('[name="despair"]').val())     || 0,
+          desperation: parseInt(html.find('[name="desperation"]').val()) || 0,
+          cellname:    html.find('[name="cellname"]').val()?.trim()      || "",
+          creedfields: html.find('[name="creedfields"]').val()?.trim()   || "",
+        };
+      },
+    },
+
+  ]; // Ende STEPS
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SCHRITT-SCHLEIFE
+  // ═══════════════════════════════════════════════════════════════════════════
+  let stepIdx = 0;
+  while (stepIdx < STEPS.length) {
+    const step = STEPS[stepIdx];
+    if (step.skip && step.skip(state)) { stepIdx++; continue; }
+    const result = await showStep(
+      step.title,
+      step.html(state),
+      { showBack: stepIdx > 0, nextLabel: step.nextLabel || "Weiter →" }
+    );
+    if (result.action === "cancel") { ui.notifications.warn("SPC-Makro abgebrochen."); return; }
+    if (result.action === "back") {
+      stepIdx--;
+      while (stepIdx > 0 && STEPS[stepIdx].skip && STEPS[stepIdx].skip(state)) stepIdx--;
+      continue;
+    }
+    if (step.collect(result.html, state) === false) continue;
+    stepIdx++;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Actor-Daten zusammenbauen & anlegen
+  // ═══════════════════════════════════════════════════════════════════════════
+  const { d1, d2, d3, d4skills, d5 } = state;
+  const isVampire  = ["vampire","ghoul"].includes(d1.spcType);
+  const isWerewolf = d1.spcType === "werewolf";
+  const isHunter   = d1.spcType === "hunter";
+
+  const exceptionaldicepools = {};
+  for (const [sk, val] of Object.entries(d4skills)) {
+    exceptionaldicepools[sk] = { active: val > 0, value: val, description: "", macroid: "", bonuses: [] };
+  }
+
+  const actorData = {
+    name: d1.name, type: "spc",
+    system: {
+      locked: d1.locked, group: d1.group, spcType: d1.spcType,
+      bio: {
+        age:    { trueage: d2.trueage, apparent: d2.apparent },
+        dateof: { birth: d2.birth, death: d2.death },
+        history: d2.history,
+      },
+      headers: {
+        concept: d1.concept, chronicle: d1.chronicle,
+        ambition: d1.ambition, desire: d1.desire,
+        touchstones: "", tenets: "",
+        sire: d5.sire, generation: d5.generation,
+        domitor: d5.domitor, creedfields: d5.creedfields, cellname: d5.cellname,
+      },
+      derivedXP:  { totalXP: d3.xpTotal, remainingXP: d3.xpRemaining },
+      health:     { max: d3.healthMax, value: d3.healthMax, superficial: d3.healthSup, aggravated: d3.healthAgg },
+      willpower:  { max: d3.wpMax,     value: d3.wpMax,     superficial: d3.wpSup,     aggravated: d3.wpAgg     },
+      description:  d2.description,
+      appearance:   d2.appearance,
+      notes:        d2.notes,
+      privatenotes: d2.privatenotes,   // ← enthält Intro-Text + Notes/Other Traits
+      biography:    d2.history,
+      equipment:    d2.equipment,
+      standarddicepools: {
+        physical: { value: d3.physical },
+        social:   { value: d3.social },
+        mental:   { value: d3.mental },
+      },
+      generaldifficulty: { normal: d3.diffNormal, strongest: d3.diffStrongest },
+      exceptionaldicepools,
+      settings: {
+        generalDifficultyEnabled: true, skillAttributeInputs: false,
+        enableDisciplines: isVampire, enableGifts: isWerewolf, enableEdges: isHunter,
+        limited: { biography: true, appearance: true, touchstones: false, tenets: false },
+      },
+      hunger:      { value: isVampire  ? d5.hunger    : 1,  max: 5 },
+      humanity:    { value: isVampire  ? d5.humanity   : 7,  stains: isVampire ? d5.stains : 0 },
+      blood:       { potency: isVampire ? d5.potency   : 0,  generation: isVampire ? d5.generation : "" },
+      rage:        { value: isWerewolf ? d5.rage       : 1,  max: 5 },
+      activeForm:  isWerewolf ? d5.activeForm : "homid",
+      crinosHealth:{ max: isWerewolf ? d5.crinosMax : 4, value: isWerewolf ? d5.crinosMax : 4, superficial: 0, aggravated: 0 },
+      renown: {
+        glory:  { value: isWerewolf ? d5.glory  : 0 },
+        honor:  { value: isWerewolf ? d5.honor  : 0 },
+        wisdom: { value: isWerewolf ? d5.wisdom : 0 },
+      },
+      balance: {
+        harano:   { value: isWerewolf ? d5.harano   : 0 },
+        hauglosk: { value: isWerewolf ? d5.hauglosk : 0 },
+      },
+      frenzyActive: false, lostTheWolf: false,
+      despair:     { value: isHunter ? d5.despair     : 0 },
+      desperation: { value: isHunter ? d5.desperation : 0 },
+    },
+    flags: { wod5e: { manualDefaultOwnership: true } },
+  };
+
+  try {
+    const actor = await Actor.create(actorData);
+    ui.notifications.info(`✅ SPC „${actor.name}" erfolgreich angelegt!`);
+    setTimeout(() => {
+      const a = game.actors.get(actor.id);
+      if (a) a.sheet.render(true);
+    }, 300);
+  } catch (err) {
+    console.error("WoD SPC Creator – Fehler:", err);
+    ui.notifications.error(`Fehler beim Anlegen: ${err.message}`);
+  }
+
+})();
