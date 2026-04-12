@@ -1,1 +1,1 @@
-# fvtt_wod5e_macros
+# wod5-x-macros for FoundryVTT
