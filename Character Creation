@@ -1,0 +1,230 @@
+/**
+ * WoD5 Zufalls-Charakter Generator für FoundryVTT v13
+ * Verteilt Attribute und Skills zufällig
+ * Nutzt die neue ApplicationV2 API
+ */
+
+const valuesToDistribute = [4, 3, 3, 3, 2, 2, 2, 2, 1];
+
+const attributeKeys = [
+    "strength", "dexterity", "stamina",
+    "charisma", "manipulation", "composure",
+    "intelligence", "wits", "resolve"
+];
+
+const skillKeys = [
+    "athletics", "brawl", "craft", "drive", "firearms",
+    "melee", "larceny", "stealth", "survival",
+    "animalken", "etiquette", "insight", "intimidation", "leadership",
+    "performance", "persuasion", "streetwise", "subterfuge",
+    "academics", "awareness", "finance", "investigation", "medicine",
+    "occult", "politics", "science", "technology"
+];
+
+const skillDistributions = {
+    specialist: {
+        label: "Specialist (10 verschiedene Skills)",
+        values: [4, 3, 3, 3, 2, 2, 2, 1, 1, 1],
+        count: 10
+    },
+    balanced: {
+        label: "Balanced (15 verschiedene Skills)",
+        values: [3, 3, 3, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1],
+        count: 15
+    },
+    jack: {
+        label: "Jack of all trades (19 verschiedene Skills)",
+        values: [3, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        count: 19
+    }
+};
+
+function shuffleArray(array) {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
+}
+
+async function createRandomCharacter() {
+    const result = await foundry.applications.api.DialogV2.prompt({
+        window: {
+            title: "WoD5 Charakter erstellen",
+            icon: "fas fa-user-plus"
+        },
+        position: {
+            width: 450
+        },
+        content: `
+            <form>
+                <div class="form-group">
+                    <label>Name:</label>
+                    <input type="text" name="actorName" value="Neuer Charakter" autofocus/>
+                </div>
+                <div class="form-group">
+                    <label>Typ:</label>
+                    <select name="actorType">
+                        <option value="vampire">Vampire</option>
+                        <option value="mortal">Mortal</option>
+                        <option value="ghul">Ghul</option>
+                        <option value="werewolf">Werewolf</option>
+                        <option value="hunter">Hunter</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Skill-Verteilung:</label>
+                    <select name="skillDistribution">
+                        <option value="specialist">Specialist (10 Skills: 1x4, 3x3, 3x2, 3x1)</option>
+                        <option value="balanced" selected>Balanced (15 Skills: 3x3, 5x2, 7x1)</option>
+                        <option value="jack">Jack of all trades (19 Skills: 1x3, 8x2, 10×1)</option>
+                    </select>
+                </div>
+                <p style="font-style: italic; margin-top: 1em; font-size: 0.9em;">
+                    Verteilt Attribute und Skills automatisch nach Erstellung.
+                </p>
+            </form>
+        `,
+        ok: {
+            label: "Erstellen",
+            icon: "fas fa-check",
+            callback: (event, button, dialog) => {
+                const formData = new FormData(button.form);
+                return {
+                    actorName: formData.get("actorName") || "Neuer Charakter",
+                    actorType: formData.get("actorType") || "vampire",
+                    skillDistribution: formData.get("skillDistribution") || "balanced"
+                };
+            }
+        },
+        cancel: {
+            label: "Abbrechen",
+            icon: "fas fa-times"
+        },
+        rejectClose: false,
+        modal: true
+    });
+
+    if (!result) return;
+
+    const { actorName, actorType, skillDistribution } = result;
+
+    // 1. Actor erstellen
+    const newActor = await Actor.create({
+        name: actorName,
+        type: actorType
+    });
+
+    if (!newActor) {
+        ui.notifications.error("Fehler beim Erstellen des Actors.");
+        return;
+    }
+
+    // 2. Datenstruktur analysieren
+    const sys = newActor.system;
+    
+    // Prüfe ob attributes und skills existieren
+    if (!sys.attributes || !sys.skills) {
+        ui.notifications.warn("Konnte Attribute- oder Skill-Pfad nicht finden. Siehe Konsole (F12).");
+        console.log("Actor System Data:", sys);
+        console.log("Verfügbare Eigenschaften:", Object.keys(sys));
+        return;
+    }
+
+    // 3. Attribute verteilen
+    const shuffledAttributes = shuffleArray(valuesToDistribute);
+    let updateData = { 
+        system: {
+            attributes: {},
+            skills: {}
+        }
+    };
+    
+    let chatContent = `<h3>${actorName}</h3>`;
+    chatContent += `<p><strong>Typ:</strong> ${actorType} | <strong>Skill-Verteilung:</strong> ${skillDistributions[skillDistribution].label}</p>`;
+    chatContent += `<h4>Attribute:</h4><ul style="columns: 2;">`;
+
+    attributeKeys.forEach((key, index) => {
+        const val = shuffledAttributes[index];
+        updateData.system.attributes[key] = { value: val };
+        
+        const label = key.charAt(0).toUpperCase() + key.slice(1);
+        chatContent += `<li><strong>${label}:</strong> ${val}</li>`;
+    });
+    
+    chatContent += `</ul>`;
+
+    // 4. Skills verteilen
+    const distribution = skillDistributions[skillDistribution];
+    const shuffledSkills = shuffleArray([...skillKeys]);
+    const selectedSkills = shuffledSkills.slice(0, distribution.count);
+    const shuffledValues = shuffleArray([...distribution.values]);
+    
+    chatContent += `<h4>Skills:</h4><ul style="columns: 2;">`;
+
+    selectedSkills.forEach((key, index) => {
+        const val = shuffledValues[index];
+        updateData.system.skills[key] = { value: val };
+        
+        const label = key.charAt(0).toUpperCase() + key.slice(1);
+        chatContent += `<li><strong>${label}:</strong> ${val}</li>`;
+    });
+    
+    chatContent += `</ul>`;
+
+    // 5. Health und Willpower berechnen
+    const staminaValue = shuffledAttributes[attributeKeys.indexOf("stamina")];
+    const composureValue = shuffledAttributes[attributeKeys.indexOf("composure")];
+    const resolveValue = shuffledAttributes[attributeKeys.indexOf("resolve")];
+    
+    const healthMax = staminaValue + 3;
+    const willpowerMax = composureValue + resolveValue;
+    
+    // Health und Willpower ins Update-Objekt einfügen
+    if (sys.health !== undefined) {
+        updateData.system.health = {
+            max: healthMax,
+            superficial: 0,
+            aggravated: 0,
+            value: healthMax
+        };
+    }
+    
+    if (sys.willpower !== undefined) {
+        updateData.system.willpower = {
+            max: willpowerMax,
+            superficial: 0,
+            aggravated: 0,
+            value: willpowerMax
+        };
+    }
+    
+    // Chat-Ausgabe erweitern
+    chatContent += `<h4>Abgeleitete Werte:</h4><ul>`;
+    chatContent += `<li><strong>Health:</strong> ${healthMax} (Stamina ${staminaValue} + 3)</li>`;
+    chatContent += `<li><strong>Willpower:</strong> ${willpowerMax} (Composure ${composureValue} + Resolve ${resolveValue})</li>`;
+    chatContent += `</ul>`;
+
+    // 6. Actor updaten
+    try {
+        await newActor.update(updateData);
+        
+        // 7. Chat-Nachricht & Actor-Sheet öffnen
+        await ChatMessage.create({ 
+            content: chatContent,
+            speaker: ChatMessage.getSpeaker({ actor: newActor })
+        });
+        
+        ui.notifications.info(`${actorName} erstellt mit Attributen, Skills, Health und Willpower.`);
+        newActor.sheet.render(true);
+        
+    } catch (error) {
+        ui.notifications.error("Fehler beim Setzen der Werte.");
+        console.error("Update Fehler:", error);
+        console.log("Versuchte Update-Daten:", updateData);
+    }
+}
+
+// Funktion ausführen
+createRandomCharacter();
