@@ -1,0 +1,81 @@
+(async () => {
+  const actor = canvas.tokens.controlled[0]?.actor || game.user.character;
+  if (!actor) {
+    ui.notifications.warn("Bitte wähle zuerst einen Token aus oder weise dir einen Charakter zu.");
+    return;
+  }
+  const items = actor.items.contents;
+  if (items.length === 0) {
+    ui.notifications.info(`Der Charakter "${actor.name}" hat keine Items.`);
+    return;
+  }
+  const itemRows = items.map(item => `
+    <div style="display: flex; align-items: center; margin-bottom: 4px; gap: 8px;">
+      <input type="checkbox" id="item-${item.id}" name="selectedItems" value="${item.id}" checked>
+      <img src="${item.img}" width="24" height="24" style="border:none; object-fit:contain;"/>
+      <label for="item-${item.id}" style="flex:1;">
+        <strong>${item.name}</strong> <small>(${item.type})</small>
+      </label>
+    </div>
+  `).join('');
+  const content = `
+    <p>Wähle die Items aus <strong>${actor.name}</strong>, die zu den Welt-Items kopiert werden sollen:</p>
+    <div style="max-height: 300px; overflow-y: auto; border: 1px solid #7a7971; padding: 8px; border-radius: 4px; margin-bottom: 12px;">
+      ${itemRows}
+    </div>
+  `;
+  const result = await foundry.applications.api.DialogV2.wait({
+    window: { title: `Items exportieren: ${actor.name}` },
+    content: content,
+    buttons: [
+      {
+        action: "copy",
+        label: "Markierte Items kopieren",
+        icon: "fa-solid fa-file-import",
+        default: true,
+        callback: (event, button, dialog) => {
+          const form = dialog.element.querySelector("form");
+          const formData = new FormDataExtended(form).object;
+          let selected = formData.selectedItems;
+          if (!selected) return [];
+          return Array.isArray(selected) ? selected : [selected];
+        }
+      },
+      {
+        action: "cancel",
+        label: "Abbrechen",
+        icon: "fa-solid fa-xmark"
+      }
+    ]
+  });
+  if (!result || result.length === 0) return;
+  const toCreate = [];
+  const skippedName = [];
+  const skippedId = [];
+  for (const itemId of result) {
+    const item = actor.items.get(itemId);
+    if (!item) continue;
+    const duplicateByName = game.items.some(i => i.name === item.name);
+    const duplicateById = game.items.has(item.id);
+    if (duplicateById) {
+      skippedId.push(item.name);
+      continue;
+    }
+    if (duplicateByName) {
+      skippedName.push(item.name);
+      continue;
+    }
+    const itemData = item.toObject();
+    toCreate.push(itemData);
+  }
+  if (toCreate.length > 0) {
+    await Item.createDocuments(toCreate);
+    ui.notifications.info(`${toCreate.length} Item(s) erfolgreich in die Welt-Items kopiert.`);
+  }
+  if (skippedName.length > 0) {
+    ui.notifications.warn(`Übersprungen (Name existiert bereits): ${skippedName.join(", ")}`);
+  }
+  if (skippedId.length > 0) {
+    ui.notifications.warn(`Übersprungen (ID existiert bereits): ${skippedId.join(", ")}`);
+  }
+})();
