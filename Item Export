@@ -50,30 +50,47 @@
   });
   if (!result || result.length === 0) return;
   const toCreate = [];
-  const skippedName = [];
   const skippedId = [];
   for (const itemId of result) {
     const item = actor.items.get(itemId);
     if (!item) continue;
-    const duplicateByName = game.items.some(i => i.name === item.name);
-    const duplicateById = game.items.has(item.id);
-    if (duplicateById) {
+    if (game.items.has(item.id)) {
       skippedId.push(item.name);
       continue;
     }
-    if (duplicateByName) {
-      skippedName.push(item.name);
-      continue;
-    }
     const itemData = item.toObject();
-    toCreate.push(itemData);
+    let currentName = itemData.name;
+    while (game.items.some(i => i.name.toLowerCase() === currentName.toLowerCase()) || toCreate.some(i => i.name.toLowerCase() === currentName.toLowerCase())) {
+      const nameInput = await foundry.applications.api.DialogV2.prompt({
+        window: { title: `Namenskonflikt: ${itemData.name}` },
+        content: `
+          <p>Ein Item mit dem Namen <strong>"${currentName}"</strong> existiert bereits in den Welt-Items.</p>
+          <div class="form-group">
+            <label>Neuer Name:</label>
+            <input type="text" name="newName" value="${currentName} (Kopie)" autofocus />
+          </div>
+        `,
+        ok: {
+          label: "Bestätigen",
+          icon: "fa-solid fa-check",
+          callback: (event, button, dialog) => dialog.element.querySelector("input[name='newName']").value.trim()
+        },
+        rejectClose: false
+      });
+      if (!nameInput) {
+        currentName = null;
+        break;
+      }
+      currentName = nameInput;
+    }
+    if (currentName) {
+      itemData.name = currentName;
+      toCreate.push(itemData);
+    }
   }
   if (toCreate.length > 0) {
     await Item.createDocuments(toCreate);
     ui.notifications.info(`${toCreate.length} Item(s) erfolgreich in die Welt-Items kopiert.`);
-  }
-  if (skippedName.length > 0) {
-    ui.notifications.warn(`Übersprungen (Name existiert bereits): ${skippedName.join(", ")}`);
   }
   if (skippedId.length > 0) {
     ui.notifications.warn(`Übersprungen (ID existiert bereits): ${skippedId.join(", ")}`);
