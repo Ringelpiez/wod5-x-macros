@@ -3,6 +3,8 @@
 2. SPC Actor Creator
 3. Gift & Rite Item Creator
 4. Item Export
+5. System-Spion
+6. Audit
 
 ---
 
