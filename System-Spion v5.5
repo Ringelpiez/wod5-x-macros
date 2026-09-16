@@ -1,0 +1,2323 @@
+(() => {
+  "use strict";
+
+  /*
+   * ============================================================
+   * SYSTEMSPION v5.5
+   * Foundry VTT v13 / v14
+   *
+   * SYSTEMUNABHÄNGIG
+   *
+   * Untersucht:
+   *   • World Actors
+   *   • World Items
+   *   • Items von Actors
+   *   • ausgewählte Token-Actors
+   *   • Items von ausgewählten Token-Actors
+   *   • Actor-Compendien
+   *   • Item-Compendien
+   *
+   * Funktionen:
+   *   🔬 Daten
+   *   🧬 Schema
+   *   🔎 Suche
+   *   📋 JSON exportieren
+   *   📊 CSV exportieren
+   *   📋 Pfad kopieren
+   *   🗑 Leeren
+   *
+   * v5.5 Änderungen (gegenüber v5.4):
+   *   • echter Fix für "Fenster füllt nicht den Platz" — die v5.4-
+   *     CSS-Regel zielte auf .dialog-content, das es in Foundrys
+   *     Dialog-Template gar nicht gibt (No-Op). Jetzt wird direkt
+   *     das <form> zum Flex-Container, #ssp53 füllt den Rest
+   *   • Close-Button/Footer bleibt dadurch am tatsächlichen unteren
+   *     Rand statt im mittleren Drittel zu "schweben"
+   *   • die 6 Toolbar-Buttons sind jetzt kompakter (kleinere
+   *     Schrift/Padding) und ordnen sich bei normaler Fensterbreite
+   *     in einer Zeile an, statt umzubrechen
+   *
+   * v5.4 Änderungen (gegenüber v5.3):
+   *   • Dialog erhält jetzt echte Größen-Optionen (width/height/
+   *     resizable) — ohne die war "frei veränderbar" gar nicht
+   *     möglich, egal wie das interne CSS aussah
+   *   • Innerer Aufbau auf Flex umgestellt (flex:1; min-height:0)
+   *     statt fixer vh-Werte, damit sich der Datenbereich beim
+   *     Ziehen am Fensterrand tatsächlich mitskaliert
+   *   • .window-content bekommt per <style>-Block volle Höhe +
+   *     Flex-Spalte, damit die Flex-Kinder überhaupt Raum haben
+   *   • feste Dialog-id, damit Mehrfachaufruf des Makros nicht
+   *     beliebig viele Fenster stapelt
+   *   • getDocumentData(document) → getDocumentData(doc), da der
+   *     Parametername zuvor den globalen document überschattet hat
+   *   • v5.3 Änderungen (unverändert übernommen):
+   *     - Compendium-Items unabhängig von Actors
+   *     - sichere Download-Funktion
+   *     - kein top-level await
+   * ============================================================
+   */
+
+  const CONFIG = {
+    maxDepth: 40,
+
+    worldActors: true,
+    worldItems: true,
+    actorItems: true,
+    selectedTokens: true,
+
+    compendiumActors: true,
+    compendiumItems: true
+  };
+
+  const BLOCKED_KEYS = new Set([
+    "__proto__",
+    "prototype",
+    "constructor"
+  ]);
+
+  const entries = [];
+
+  let currentEntry = null;
+  let currentDocument = null;
+  let currentData = null;
+  let currentFields = [];
+
+  // ============================================================
+  // HILFSFUNKTIONEN
+  // ============================================================
+
+  function safeKey(key) {
+    return !BLOCKED_KEYS.has(String(key));
+  }
+
+  function valueType(value) {
+    if (value === null) return "null";
+    if (value === undefined) return "undefined";
+    if (Array.isArray(value)) return `Array[${value.length}]`;
+    return typeof value;
+  }
+
+  function stringify(value) {
+    if (value === undefined) return "undefined";
+    if (value === null) return "null";
+
+    if (typeof value === "string") {
+      return value;
+    }
+
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return String(value);
+    }
+  }
+
+  function escapeHTML(value) {
+    return String(value ?? "")
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  // Hinweis v5.4: Parameter heißt jetzt "doc" statt "document" —
+  // vorher wurde innerhalb der Funktion der globale document
+  // überschattet. Hat in v5.3 keinen Schaden angerichtet (die
+  // Funktion griff nirgends auf document.* zu), war aber ein
+  // Footgun für künftige Erweiterungen dieser Funktion.
+  function getDocumentData(doc) {
+    if (!doc) return null;
+
+    if (typeof doc.toObject === "function") {
+      try {
+        return doc.toObject();
+      } catch (error) {
+        console.warn(
+          "Systemspion: toObject() fehlgeschlagen.",
+          error
+        );
+      }
+    }
+
+    return doc;
+  }
+
+  function addEntry(entry) {
+    entries.push(entry);
+  }
+
+  // ============================================================
+  // WORLD ACTORS + ACTOR ITEMS
+  // ============================================================
+
+  if (CONFIG.worldActors) {
+    for (const actor of game.actors ?? []) {
+
+      addEntry({
+        document: actor,
+        type: "World Actor",
+        label: `👤 ${actor.name}`,
+        uuid: actor.uuid,
+        id: actor.id
+      });
+
+      if (CONFIG.actorItems) {
+        for (const item of actor.items ?? []) {
+
+          addEntry({
+            document: item,
+            type: "Actor Item",
+            label: `   ⚔ ${actor.name} → ${item.name}`,
+            uuid: item.uuid,
+            id: item.id,
+            parent: actor
+          });
+        }
+      }
+    }
+  }
+
+  // ============================================================
+  // WORLD ITEMS
+  // ============================================================
+
+  if (CONFIG.worldItems) {
+    for (const item of game.items ?? []) {
+
+      addEntry({
+        document: item,
+        type: "World Item",
+        label: `📦 ${item.name}`,
+        uuid: item.uuid,
+        id: item.id
+      });
+    }
+  }
+
+  // ============================================================
+  // AUSGEWÄHLTE TOKENS
+  // ============================================================
+
+  if (CONFIG.selectedTokens) {
+
+    for (const token of canvas?.tokens?.controlled ?? []) {
+
+      const actor = token.actor;
+
+      if (!actor) continue;
+
+      addEntry({
+        document: actor,
+        type: "Token Actor",
+        label: `🎯 ${token.name} → ${actor.name}`,
+        uuid: actor.uuid,
+        id: actor.id,
+        token
+      });
+
+      if (CONFIG.actorItems) {
+
+        for (const item of actor.items ?? []) {
+
+          addEntry({
+            document: item,
+            type: "Token Item",
+            label: `   ⚔ ${token.name} → ${item.name}`,
+            uuid: item.uuid,
+            id: item.id,
+            parent: actor,
+            token
+          });
+        }
+      }
+    }
+  }
+
+  // ============================================================
+  // COMPENDIEN
+  // ============================================================
+
+  const compendiumPromises = [];
+
+  for (const pack of game.packs ?? []) {
+
+    const isActor = pack.documentName === "Actor";
+    const isItem = pack.documentName === "Item";
+
+    if (!isActor && !isItem) continue;
+
+    if (isActor && !CONFIG.compendiumActors) continue;
+    if (isItem && !CONFIG.compendiumItems) continue;
+
+    const promise = pack.getIndex()
+      .then(index => {
+
+        for (const record of index) {
+
+          addEntry({
+
+            document: null,
+
+            type:
+              isActor
+                ? "Compendium Actor"
+                : "Compendium Item",
+
+            label:
+              `📚 ${pack.collection} → ${record.name}`,
+
+            uuid:
+              `Compendium.${pack.collection}.${record._id}`,
+
+            id: record._id,
+
+            pack: pack.collection,
+            packObject: pack
+
+          });
+        }
+
+      })
+      .catch(error => {
+
+        console.warn(
+          `Systemspion: Compendium ${pack.collection} konnte nicht gelesen werden.`,
+          error
+        );
+
+      });
+
+    compendiumPromises.push(promise);
+  }
+
+  // ============================================================
+  // DATEN FLATTEN
+  // ============================================================
+
+  function flatten(
+    value,
+    path = "",
+    result = [],
+    depth = 0,
+    seen = new WeakSet()
+  ) {
+
+    if (depth > CONFIG.maxDepth) {
+      return result;
+    }
+
+    if (
+      value !== null &&
+      typeof value === "object"
+    ) {
+
+      if (seen.has(value)) {
+        return result;
+      }
+
+      seen.add(value);
+    }
+
+    if (
+      value === null ||
+      value === undefined ||
+      typeof value !== "object"
+    ) {
+
+      result.push({
+        path,
+        value,
+        type: valueType(value)
+      });
+
+      return result;
+    }
+
+    const keys = Object.keys(value);
+
+    if (!keys.length) {
+
+      result.push({
+        path,
+        value,
+        type: valueType(value)
+      });
+
+      return result;
+    }
+
+    for (const key of keys) {
+
+      if (!safeKey(key)) continue;
+
+      const childPath =
+        path
+          ? `${path}.${key}`
+          : key;
+
+      flatten(
+        value[key],
+        childPath,
+        result,
+        depth + 1,
+        seen
+      );
+    }
+
+    return result;
+  }
+
+  // ============================================================
+  // QUERY
+  // ============================================================
+
+  function queryMatches(path, query) {
+
+    const pathParts =
+      path
+        .split(".")
+        .filter(Boolean);
+
+    const queryParts =
+      query
+        .trim()
+        .replace(/\s+/g, "")
+        .split(".")
+        .filter(Boolean);
+
+    function match(pi, qi) {
+
+      if (
+        pi === pathParts.length &&
+        qi === queryParts.length
+      ) {
+        return true;
+      }
+
+      if (qi >= queryParts.length) {
+        return false;
+      }
+
+      const part = queryParts[qi];
+
+      // **
+      if (part === "**") {
+
+        if (qi === queryParts.length - 1) {
+          return true;
+        }
+
+        for (
+          let i = pi;
+          i <= pathParts.length;
+          i++
+        ) {
+
+          if (match(i, qi + 1)) {
+            return true;
+          }
+        }
+
+        return false;
+      }
+
+      if (pi >= pathParts.length) {
+        return false;
+      }
+
+      if (
+        part === "*" ||
+        part === pathParts[pi]
+      ) {
+
+        return match(
+          pi + 1,
+          qi + 1
+        );
+      }
+
+      return false;
+    }
+
+    return match(0, 0);
+  }
+
+  // ============================================================
+  // MAKRO-AUSDRUCK
+  // ============================================================
+
+  function makeExpression(
+    entry,
+    document,
+    path
+  ) {
+
+    let base = "document";
+
+    const id =
+      document?.id ??
+      entry?.id;
+
+    switch (entry?.type) {
+
+      case "World Actor":
+        base =
+          `game.actors.get("${id}")`;
+        break;
+
+      case "World Item":
+        base =
+          `game.items.get("${id}")`;
+        break;
+
+      case "Actor Item":
+        base =
+          `actor.items.get("${id}")`;
+        break;
+
+      case "Token Actor":
+        base =
+          "token.actor";
+        break;
+
+      case "Token Item":
+        base =
+          `token.actor.items.get("${id}")`;
+        break;
+
+      case "Compendium Actor":
+      case "Compendium Item":
+        base =
+          `(await fromUuid("${entry.uuid}"))`;
+        break;
+    }
+
+    if (!path) return base;
+
+    return (
+      base +
+      path
+        .split(".")
+        .filter(Boolean)
+        .map(key => `?.${key}`)
+        .join("")
+    );
+  }
+
+  // ============================================================
+  // SCHEMA
+  // ============================================================
+
+  function inspectSchema(document) {
+
+    if (!document) return [];
+
+    const candidates = [
+      document.schema,
+      document.constructor?.schema,
+      document.constructor?.metadata?.schema
+    ];
+
+    const schema = candidates.find(
+      value =>
+        value &&
+        typeof value === "object"
+    );
+
+    if (!schema) return [];
+
+    const result = [];
+    const seen = new WeakSet();
+
+    function walk(
+      object,
+      path = "",
+      depth = 0
+    ) {
+
+      if (
+        !object ||
+        typeof object !== "object"
+      ) {
+        return;
+      }
+
+      if (depth > CONFIG.maxDepth) {
+        return;
+      }
+
+      if (seen.has(object)) {
+        return;
+      }
+
+      seen.add(object);
+
+      for (const key of Object.keys(object)) {
+
+        if (!safeKey(key)) continue;
+
+        const next =
+          path
+            ? `${path}.${key}`
+            : key;
+
+        const field = object[key];
+
+        const fieldType =
+          field?.constructor?.name ??
+          "Object";
+
+        result.push({
+          path: next,
+          type: fieldType,
+          field
+        });
+
+        if (
+          field?.fields &&
+          typeof field.fields === "object"
+        ) {
+
+          walk(
+            field.fields,
+            next,
+            depth + 1
+          );
+        }
+
+        if (
+          field?.model &&
+          typeof field.model === "object"
+        ) {
+
+          walk(
+            field.model,
+            next,
+            depth + 1
+          );
+        }
+      }
+    }
+
+    walk(schema);
+
+    return result;
+  }
+
+  // ============================================================
+  // DOWNLOAD
+  // ============================================================
+
+  function downloadFile(
+    filename,
+    content,
+    mime
+  ) {
+
+    const blob =
+      new Blob(
+        [content],
+        { type: mime }
+      );
+
+    const url =
+      URL.createObjectURL(blob);
+
+    const link =
+      document.createElement("a");
+
+    link.href = url;
+    link.download = filename;
+    link.style.display = "none";
+
+    document.body.appendChild(link);
+
+    link.click();
+
+    link.remove();
+
+    setTimeout(
+      () => URL.revokeObjectURL(url),
+      1000
+    );
+  }
+
+  // ============================================================
+  // GUI
+  // ============================================================
+
+  const DIALOG_ID = "systemspion-v54-dialog";
+
+  const content = `
+
+    <!--
+      v5.5: Fix gegenüber v5.4 — Foundrys Dialog-Template hat KEIN
+      .dialog-content. Der eigentliche Inhalt liegt direkt als Kind
+      von <form>, als Geschwister von <footer class="dialog-buttons">.
+      Die v5.4-Regel auf .dialog-content hat den Selektor nie
+      getroffen (No-Op), deshalb ist die ganze Flex-Kette ins Leere
+      gelaufen: das <form> hat sich nie auf volle Höhe gestreckt,
+      #ssp53 blieb auf Content-Höhe, und der Close-Button landete
+      irgendwo in der Mitte statt ganz unten. Jetzt wird direkt das
+      <form> zum Flex-Container gemacht, #ssp53 füllt den Rest
+      (flex:1), und der Footer bleibt in natürlicher Größe am
+      unteren Rand (flex:0 0 auto).
+    -->
+    <style>
+      #${DIALOG_ID} .window-content {
+        height: 100%;
+        box-sizing: border-box;
+      }
+      #${DIALOG_ID} .window-content form {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        min-height: 0;
+        box-sizing: border-box;
+      }
+      #${DIALOG_ID} .window-content form > #ssp53 {
+        flex: 1 1 auto;
+        min-height: 0;
+      }
+      #${DIALOG_ID} .window-content form footer.dialog-buttons {
+        flex: 0 0 auto;
+        margin-top: 4px;
+      }
+
+      /* Toolbar: 6 Buttons kompakt & horizontal statt groß/umbrechend */
+      #${DIALOG_ID} .ssp-toolbar button {
+        flex: 1 1 120px;
+        min-width: 80px;
+        padding: 4px 6px;
+        font-size: 11px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+    </style>
+
+    <div id="ssp53" style="
+      width:100%;
+      height:100%;
+      min-width:0;
+      min-height:0;
+      box-sizing:border-box;
+      display:flex;
+      flex-direction:column;
+      gap:7px;
+    ">
+
+      <!-- DATENQUELLE + SUCHE -->
+
+      <div style="
+        display:grid;
+        grid-template-columns:
+          minmax(180px, 2fr)
+          minmax(140px, 1fr)
+          auto;
+        gap:6px;
+        width:100%;
+        min-width:0;
+      ">
+
+        <select
+          id="ssp-document"
+          style="
+            width:100%;
+            min-width:0;
+          "
+        ></select>
+
+        <input
+          id="ssp-query"
+          type="text"
+          placeholder="Suche / Query, z.B. **.value"
+          style="
+            width:100%;
+            min-width:0;
+            box-sizing:border-box;
+            font-family:monospace;
+          "
+        >
+
+        <button
+          type="button"
+          id="ssp-search"
+        >
+          🔎 Suchen
+        </button>
+
+      </div>
+
+
+      <!-- BUTTONS -->
+
+      <div class="ssp-toolbar" style="
+        display:flex;
+        flex-wrap:wrap;
+        gap:4px;
+        width:100%;
+        min-width:0;
+      ">
+
+        <button type="button" id="ssp-scan">
+          🔬 Daten
+        </button>
+
+        <button type="button" id="ssp-schema">
+          🧬 Schema
+        </button>
+
+        <button type="button" id="ssp-json">
+          📋 JSON exportieren
+        </button>
+
+        <button type="button" id="ssp-csv">
+          📊 CSV exportieren
+        </button>
+
+        <button type="button" id="ssp-copy-path">
+          📋 Pfad kopieren
+        </button>
+
+        <button type="button" id="ssp-clear">
+          🗑 Leeren
+        </button>
+
+      </div>
+
+
+      <!-- STATUS -->
+
+      <div
+        id="ssp-status"
+        style="
+          font-size:12px;
+          padding:3px;
+          overflow-wrap:anywhere;
+          word-break:break-word;
+        "
+      >
+        Initialisiere...
+      </div>
+
+
+      <!-- HAUPTBEREICH -->
+      <!--
+        v5.4: statt fixer min-height:500px / max-height:70vh jetzt
+        flex:1 + min-height:0 — der Bereich füllt genau den Platz,
+        den das (jetzt resizable) Dialog-Fenster hergibt, egal wie
+        der Nutzer es zieht.
+      -->
+
+      <div style="
+        display:grid;
+        grid-template-columns:
+          minmax(0, 1fr)
+          minmax(0, 1fr);
+
+        gap:8px;
+
+        width:100%;
+        min-width:0;
+
+        flex:1;
+        min-height:0;
+      ">
+
+
+        <!-- LINKS -->
+
+        <div style="
+          min-width:0;
+          min-height:0;
+          overflow:auto;
+
+          border:
+            1px solid
+            var(--color-border-light-primary);
+
+          padding:7px;
+
+          box-sizing:border-box;
+        ">
+
+          <h3>🌳 Daten / Schema</h3>
+
+          <div
+            id="ssp-left"
+            style="
+              min-width:0;
+            "
+          >
+          </div>
+
+        </div>
+
+
+        <!-- RECHTS -->
+
+        <div style="
+          min-width:0;
+          min-height:0;
+          overflow:auto;
+
+          border:
+            1px solid
+            var(--color-border-light-primary);
+
+          padding:8px;
+
+          box-sizing:border-box;
+        ">
+
+          <h3>🔬 Inspector</h3>
+
+          <div
+            id="ssp-right"
+            style="
+              min-width:0;
+              overflow-wrap:anywhere;
+              word-break:break-word;
+            "
+          >
+            Nichts ausgewählt.
+          </div>
+
+        </div>
+
+      </div>
+
+    </div>
+  `;
+
+  // ============================================================
+  // DIALOG
+  // ============================================================
+
+  new Dialog({
+
+    title:
+      `🕵️ Systemspion v5.5 — ${
+        game.system?.id ?? "unbekannt"
+      }`,
+
+    content,
+
+    buttons: {
+
+      close: {
+        label: "Schließen"
+      }
+
+    },
+
+    render: html => {
+
+      const root = html[0];
+
+      const select =
+        root.querySelector(
+          "#ssp-document"
+        );
+
+      const query =
+        root.querySelector(
+          "#ssp-query"
+        );
+
+      const status =
+        root.querySelector(
+          "#ssp-status"
+        );
+
+      const left =
+        root.querySelector(
+          "#ssp-left"
+        );
+
+      const right =
+        root.querySelector(
+          "#ssp-right"
+        );
+
+      // ========================================================
+      // SELECT FÜLLEN
+      // ========================================================
+
+      function populateSelect() {
+
+        const oldValue =
+          select.value;
+
+        select.innerHTML = "";
+
+        entries.forEach(
+          (entry, index) => {
+
+            const option =
+              document.createElement(
+                "option"
+              );
+
+            option.value =
+              String(index);
+
+            option.textContent =
+              entry.label;
+
+            select.appendChild(option);
+          }
+        );
+
+        if (
+          oldValue &&
+          Number(oldValue) < entries.length
+        ) {
+
+          select.value = oldValue;
+
+        }
+      }
+
+      // ========================================================
+      // PFAD KOPIEREN
+      // ========================================================
+
+      function copyPath(path = null) {
+
+        let pathToCopy = path;
+
+        if (!pathToCopy) {
+
+          pathToCopy =
+            root.querySelector(
+              "#ssp-current-path"
+            )?.textContent?.trim() ??
+            "";
+        }
+
+        if (!pathToCopy) {
+
+          ui.notifications.warn(
+            "Kein Pfad ausgewählt."
+          );
+
+          return;
+        }
+
+        if (
+          navigator.clipboard &&
+          typeof navigator.clipboard.writeText ===
+            "function"
+        ) {
+
+          navigator.clipboard
+            .writeText(pathToCopy)
+            .then(() => {
+
+              ui.notifications.info(
+                `Pfad kopiert: ${pathToCopy}`
+              );
+
+            })
+            .catch(() => {
+
+              ui.notifications.warn(
+                "Der Pfad konnte nicht kopiert werden."
+              );
+
+            });
+
+          return;
+        }
+
+        // Fallback
+        const textarea =
+          document.createElement("textarea");
+
+        textarea.value =
+          pathToCopy;
+
+        textarea.style.position =
+          "fixed";
+
+        textarea.style.opacity =
+          "0";
+
+        document.body.appendChild(
+          textarea
+        );
+
+        textarea.select();
+
+        try {
+          document.execCommand("copy");
+
+          ui.notifications.info(
+            `Pfad kopiert: ${pathToCopy}`
+          );
+
+        } catch {
+          ui.notifications.warn(
+            "Der Pfad konnte nicht kopiert werden."
+          );
+        }
+
+        textarea.remove();
+      }
+
+      // ========================================================
+      // INSPECTOR
+      // ========================================================
+
+      function inspect(
+        path,
+        value
+      ) {
+
+        const expression =
+          makeExpression(
+            currentEntry,
+            currentDocument,
+            path
+          );
+
+        const uuid =
+          currentDocument?.uuid ??
+          currentEntry?.uuid ??
+          "";
+
+        right.innerHTML = `
+
+          <div style="
+            display:flex;
+            flex-direction:column;
+            gap:7px;
+            min-width:0;
+          ">
+
+            <b>Pfad</b>
+
+            <div
+              id="ssp-current-path"
+              style="
+                font-family:monospace;
+                overflow-wrap:anywhere;
+                word-break:break-word;
+                user-select:text;
+              "
+            >
+              ${escapeHTML(path)}
+            </div>
+
+            <b>Typ</b>
+
+            <div>
+              ${escapeHTML(
+                valueType(value)
+              )}
+            </div>
+
+            <b>Wert</b>
+
+            <pre style="
+              white-space:pre-wrap;
+              overflow:auto;
+              max-height:180px;
+              user-select:text;
+              overflow-wrap:anywhere;
+              word-break:break-word;
+            ">${escapeHTML(
+              stringify(value)
+            )}</pre>
+
+            <b>Makro-Ausdruck</b>
+
+            <textarea
+              style="
+                width:100%;
+                min-height:90px;
+                box-sizing:border-box;
+                font-family:monospace;
+                resize:vertical;
+              "
+              readonly
+            >${escapeHTML(
+              expression
+            )}</textarea>
+
+            <button
+              type="button"
+              id="ssp-inspector-copy-path"
+            >
+              📋 Diesen Pfad kopieren
+            </button>
+
+            <b>UUID</b>
+
+            <div style="
+              font-family:monospace;
+              overflow-wrap:anywhere;
+              word-break:break-all;
+            ">
+              ${escapeHTML(uuid)}
+            </div>
+
+          </div>
+        `;
+
+        root.querySelector(
+          "#ssp-inspector-copy-path"
+        )?.addEventListener(
+          "click",
+          () => copyPath(path)
+        );
+      }
+
+      // ========================================================
+      // DATEN-TREE
+      // ========================================================
+
+      function renderTree() {
+
+        left.innerHTML = "";
+
+        if (!currentData) {
+
+          left.textContent =
+            "Keine Daten.";
+
+          return;
+        }
+
+        buildTree(
+          currentData,
+          "",
+          left,
+          0
+        );
+      }
+
+      function buildTree(
+        value,
+        path,
+        parent,
+        depth
+      ) {
+
+        if (
+          depth >
+          CONFIG.maxDepth
+        ) {
+          return;
+        }
+
+        if (
+          value === null ||
+          value === undefined ||
+          typeof value !== "object"
+        ) {
+
+          const button =
+            document.createElement(
+              "button"
+            );
+
+          button.type =
+            "button";
+
+          button.style.cssText = `
+            display:block;
+            width:100%;
+            max-width:100%;
+            border:0;
+            background:none;
+            text-align:left;
+            cursor:pointer;
+            padding:3px;
+            font-family:monospace;
+            padding-left:${depth * 12}px;
+            overflow-wrap:anywhere;
+            word-break:break-word;
+            box-sizing:border-box;
+          `;
+
+          const key =
+            path.split(".").pop();
+
+          button.textContent =
+            `• ${key}: ${stringify(value)}`;
+
+          button.addEventListener(
+            "click",
+            () =>
+              inspect(
+                path,
+                value
+              )
+          );
+
+          parent.appendChild(
+            button
+          );
+
+          return;
+        }
+
+        for (
+          const key of Object.keys(value)
+        ) {
+
+          if (!safeKey(key)) {
+            continue;
+          }
+
+          const child =
+            value[key];
+
+          const childPath =
+            path
+              ? `${path}.${key}`
+              : key;
+
+          const expandable =
+            child !== null &&
+            typeof child === "object" &&
+            Object.keys(child).length > 0;
+
+          const wrapper =
+            document.createElement(
+              "div"
+            );
+
+          wrapper.style.minWidth =
+            "0";
+
+          const button =
+            document.createElement(
+              "button"
+            );
+
+          button.type =
+            "button";
+
+          button.style.cssText = `
+            display:block;
+            width:100%;
+            max-width:100%;
+            border:0;
+            background:none;
+            text-align:left;
+            cursor:pointer;
+            padding:3px;
+            font-family:monospace;
+            padding-left:${depth * 12}px;
+            overflow-wrap:anywhere;
+            word-break:break-word;
+            box-sizing:border-box;
+          `;
+
+          button.textContent =
+            `${expandable ? "▸" : "•"} ${key}`;
+
+          const children =
+            document.createElement(
+              "div"
+            );
+
+          children.style.display =
+            "none";
+
+          children.style.minWidth =
+            "0";
+
+          wrapper.appendChild(
+            button
+          );
+
+          wrapper.appendChild(
+            children
+          );
+
+          parent.appendChild(
+            wrapper
+          );
+
+          button.addEventListener(
+            "click",
+            () => {
+
+              inspect(
+                childPath,
+                child
+              );
+
+              if (expandable) {
+
+                const open =
+                  children.style.display !==
+                  "block";
+
+                children.style.display =
+                  open
+                    ? "block"
+                    : "none";
+
+                button.textContent =
+                  `${open ? "▾" : "▸"} ${key}`;
+              }
+            }
+          );
+
+          if (expandable) {
+
+            buildTree(
+              child,
+              childPath,
+              children,
+              depth + 1
+            );
+          }
+        }
+      }
+
+      // ========================================================
+      // DOKUMENT LADEN
+      // ========================================================
+
+      function loadEntry(
+        entry,
+        callback
+      ) {
+
+        if (entry.document) {
+
+          callback(
+            entry.document
+          );
+
+          return;
+        }
+
+        if (!entry.uuid) {
+
+          callback(null);
+
+          return;
+        }
+
+        fromUuid(entry.uuid)
+          .then(
+            documentObject => {
+
+              callback(
+                documentObject
+              );
+
+            }
+          )
+          .catch(
+            error => {
+
+              console.warn(
+                "Systemspion: fromUuid() fehlgeschlagen.",
+                error
+              );
+
+              callback(null);
+            }
+          );
+      }
+
+      // ========================================================
+      // DATEN SCANNEN
+      // ========================================================
+
+      function scanData() {
+
+        const index =
+          Number(select.value);
+
+        const entry =
+          entries[index];
+
+        if (!entry) return;
+
+        currentEntry =
+          entry;
+
+        status.textContent =
+          "⏳ Lade Daten...";
+
+        loadEntry(
+          entry,
+          documentObject => {
+
+            if (!documentObject) {
+
+              status.textContent =
+                "❌ Dokument konnte nicht geladen werden.";
+
+              return;
+            }
+
+            currentDocument =
+              documentObject;
+
+            currentData =
+              getDocumentData(
+                documentObject
+              );
+
+            currentFields =
+              flatten(
+                currentData
+              );
+
+            status.textContent =
+              `${entry.label} — ${currentFields.length} Datenfelder`;
+
+            renderTree();
+          }
+        );
+      }
+
+      // ========================================================
+      // SCHEMA SCANNEN
+      // ========================================================
+
+      function scanSchema() {
+
+        const index =
+          Number(select.value);
+
+        const entry =
+          entries[index];
+
+        if (!entry) return;
+
+        currentEntry =
+          entry;
+
+        status.textContent =
+          "⏳ Lade Schema...";
+
+        loadEntry(
+          entry,
+          documentObject => {
+
+            if (!documentObject) {
+
+              status.textContent =
+                "❌ Dokument konnte nicht geladen werden.";
+
+              return;
+            }
+
+            currentDocument =
+              documentObject;
+
+            currentData =
+              getDocumentData(
+                documentObject
+              );
+
+            const schemaFields =
+              inspectSchema(
+                documentObject
+              );
+
+            currentFields =
+              schemaFields;
+
+            left.innerHTML = "";
+
+            if (!schemaFields.length) {
+
+              left.innerHTML = `
+
+                <div style="
+                  overflow-wrap:anywhere;
+                  word-break:break-word;
+                ">
+
+                  <p>
+                    <b>
+                      Kein zugängliches Schema gefunden.
+                    </b>
+                  </p>
+
+                  <p>
+                    Das bedeutet nicht automatisch,
+                    dass das System kein Schema besitzt.
+                  </p>
+
+                </div>
+              `;
+
+              status.textContent =
+                "Keine zugänglichen Schemafelder.";
+
+              return;
+            }
+
+            status.textContent =
+              `🧬 ${schemaFields.length} Schemafelder`;
+
+            const table =
+              document.createElement(
+                "table"
+              );
+
+            table.style.cssText = `
+              width:100%;
+              max-width:100%;
+              table-layout:fixed;
+              border-collapse:collapse;
+              font-size:11px;
+            `;
+
+            table.innerHTML = `
+
+              <colgroup>
+
+                <col style="width:62%;">
+
+                <col style="width:38%;">
+
+              </colgroup>
+
+              <thead>
+
+                <tr>
+
+                  <th style="
+                    text-align:left;
+                    padding:5px;
+                    overflow-wrap:anywhere;
+                  ">
+                    Pfad
+                  </th>
+
+                  <th style="
+                    text-align:left;
+                    padding:5px;
+                    overflow-wrap:anywhere;
+                  ">
+                    Field-Typ
+                  </th>
+
+                </tr>
+
+              </thead>
+
+              <tbody></tbody>
+            `;
+
+            const tbody =
+              table.querySelector(
+                "tbody"
+              );
+
+            for (
+              const field of schemaFields
+            ) {
+
+              const row =
+                document.createElement(
+                  "tr"
+                );
+
+              row.style.cursor =
+                "pointer";
+
+              row.innerHTML = `
+
+                <td style="
+                  padding:4px;
+                  vertical-align:top;
+                  overflow-wrap:anywhere;
+                  word-break:break-word;
+                ">
+                  <code>
+                    ${escapeHTML(
+                      field.path
+                    )}
+                  </code>
+                </td>
+
+                <td style="
+                  padding:4px;
+                  vertical-align:top;
+                  overflow-wrap:anywhere;
+                  word-break:break-word;
+                ">
+                  ${escapeHTML(
+                    field.type
+                  )}
+                </td>
+              `;
+
+              row.addEventListener(
+                "click",
+                () => {
+
+                  let value =
+                    currentData;
+
+                  for (
+                    const key of
+                    field.path.split(".")
+                  ) {
+
+                    value =
+                      value?.[key];
+                  }
+
+                  inspect(
+                    field.path,
+                    value
+                  );
+                }
+              );
+
+              tbody.appendChild(
+                row
+              );
+            }
+
+            left.appendChild(
+              table
+            );
+          }
+        );
+      }
+
+      // ========================================================
+      // SUCHE
+      // ========================================================
+
+      function searchAll() {
+
+        const search =
+          query.value.trim();
+
+        if (!search) {
+
+          ui.notifications.warn(
+            "Bitte eine Query eingeben."
+          );
+
+          return;
+        }
+
+        const found = [];
+
+        status.textContent =
+          "🔎 Durchsuche Datenquellen...";
+
+        const directEntries =
+          entries.filter(
+            entry =>
+              entry.document
+          );
+
+        for (
+          const entry of directEntries
+        ) {
+
+          const data =
+            getDocumentData(
+              entry.document
+            );
+
+          const fields =
+            flatten(data);
+
+          for (
+            const field of fields
+          ) {
+
+            if (
+              queryMatches(
+                field.path,
+                search
+              )
+            ) {
+
+              found.push({
+                ...field,
+                entry,
+                document:
+                  entry.document
+              });
+            }
+          }
+        }
+
+        const compendiumEntries =
+          entries.filter(
+            entry =>
+              !entry.document &&
+              entry.uuid
+          );
+
+        if (
+          !compendiumEntries.length
+        ) {
+
+          renderSearchResults(
+            search,
+            found
+          );
+
+          return;
+        }
+
+        let remaining =
+          compendiumEntries.length;
+
+        for (
+          const entry of
+          compendiumEntries
+        ) {
+
+          fromUuid(entry.uuid)
+            .then(
+              documentObject => {
+
+                if (!documentObject) {
+                  return;
+                }
+
+                const fields =
+                  flatten(
+                    getDocumentData(
+                      documentObject
+                    )
+                  );
+
+                for (
+                  const field of fields
+                ) {
+
+                  if (
+                    queryMatches(
+                      field.path,
+                      search
+                    )
+                  ) {
+
+                    found.push({
+                      ...field,
+                      entry,
+                      document:
+                        documentObject
+                    });
+                  }
+                }
+              }
+            )
+            .catch(
+              error => {
+
+                console.warn(
+                  "Systemspion:",
+                  entry.uuid,
+                  error
+                );
+
+              }
+            )
+            .finally(
+              () => {
+
+                remaining--;
+
+                if (
+                  remaining === 0
+                ) {
+
+                  renderSearchResults(
+                    search,
+                    found
+                  );
+                }
+              }
+            );
+        }
+      }
+
+      // ========================================================
+      // SUCHERGEBNISSE
+      // ========================================================
+
+      function renderSearchResults(
+        search,
+        found
+      ) {
+
+        currentFields =
+          found;
+
+        status.textContent =
+          `🔎 ${found.length} Treffer für "${search}"`;
+
+        left.innerHTML = "";
+
+        if (!found.length) {
+
+          left.textContent =
+            "Keine Treffer.";
+
+          return;
+        }
+
+        const table =
+          document.createElement(
+            "table"
+          );
+
+        table.style.cssText = `
+          width:100%;
+          max-width:100%;
+          table-layout:fixed;
+          border-collapse:collapse;
+          font-size:11px;
+        `;
+
+        table.innerHTML = `
+
+          <colgroup>
+
+            <col style="width:43%;">
+
+            <col style="width:32%;">
+
+            <col style="width:25%;">
+
+          </colgroup>
+
+          <thead>
+
+            <tr>
+
+              <th>Pfad</th>
+              <th>Wert</th>
+              <th>Dokument</th>
+
+            </tr>
+
+          </thead>
+
+          <tbody></tbody>
+        `;
+
+        const tbody =
+          table.querySelector(
+            "tbody"
+          );
+
+        for (
+          const result of found
+        ) {
+
+          const row =
+            document.createElement(
+              "tr"
+            );
+
+          row.style.cursor =
+            "pointer";
+
+          row.innerHTML = `
+
+            <td style="
+              overflow-wrap:anywhere;
+              word-break:break-word;
+              padding:4px;
+              vertical-align:top;
+            ">
+              <code>
+                ${escapeHTML(
+                  result.path
+                )}
+              </code>
+            </td>
+
+            <td style="
+              overflow-wrap:anywhere;
+              word-break:break-word;
+              padding:4px;
+              vertical-align:top;
+            ">
+              ${escapeHTML(
+                stringify(
+                  result.value
+                )
+              )}
+            </td>
+
+            <td style="
+              overflow-wrap:anywhere;
+              word-break:break-word;
+              padding:4px;
+              vertical-align:top;
+            ">
+              ${escapeHTML(
+                result.document?.name ??
+                "?"
+              )}
+            </td>
+          `;
+
+          row.addEventListener(
+            "click",
+            () => {
+
+              currentEntry =
+                result.entry;
+
+              currentDocument =
+                result.document;
+
+              currentData =
+                getDocumentData(
+                  result.document
+                );
+
+              inspect(
+                result.path,
+                result.value
+              );
+            }
+          );
+
+          tbody.appendChild(
+            row
+          );
+        }
+
+        left.appendChild(
+          table
+        );
+      }
+
+      // ========================================================
+      // EXPORT JSON
+      // ========================================================
+
+      function exportJSON() {
+
+        const fields =
+          currentFields?.length
+            ? currentFields
+            : currentData
+              ? flatten(currentData)
+              : [];
+
+        if (!fields.length) {
+
+          ui.notifications.warn(
+            "Keine Daten zum Export vorhanden."
+          );
+
+          return;
+        }
+
+        const output = {
+
+          foundry:
+            game.version,
+
+          system:
+            game.system?.id ??
+            null,
+
+          systemVersion:
+            game.system?.version ??
+            null,
+
+          exported:
+            new Date().toISOString(),
+
+          source:
+            currentEntry?.type ??
+            null,
+
+          document:
+            currentDocument?.name ??
+            currentEntry?.label ??
+            null,
+
+          uuid:
+            currentDocument?.uuid ??
+            currentEntry?.uuid ??
+            null,
+
+          fields:
+            fields.map(
+              field => ({
+                path:
+                  field.path,
+
+                value:
+                  field.value,
+
+                type:
+                  field.type
+              })
+            )
+        };
+
+        downloadFile(
+          `systemspion-${Date.now()}.json`,
+
+          JSON.stringify(
+            output,
+            null,
+            2
+          ),
+
+          "application/json;charset=utf-8"
+        );
+
+        ui.notifications.info(
+          `${fields.length} Felder als JSON exportiert.`
+        );
+      }
+
+      // ========================================================
+      // EXPORT CSV
+      // ========================================================
+
+      function exportCSV() {
+
+        const fields =
+          currentFields?.length
+            ? currentFields
+            : currentData
+              ? flatten(currentData)
+              : [];
+
+        if (!fields.length) {
+
+          ui.notifications.warn(
+            "Keine Daten zum Export vorhanden."
+          );
+
+          return;
+        }
+
+        const rows = [
+          [
+            "Pfad",
+            "Wert",
+            "Typ"
+          ]
+        ];
+
+        for (
+          const field of fields
+        ) {
+
+          rows.push([
+            field.path,
+            stringify(field.value),
+            field.type
+          ]);
+        }
+
+        const csv =
+          rows
+            .map(
+              row =>
+                row
+                  .map(
+                    value =>
+                      `"${String(value)
+                        .replaceAll('"', '""')
+                        .replaceAll(
+                          /\r?\n/g,
+                          " "
+                        )}"`
+                  )
+                  .join(",")
+            )
+            .join("\n");
+
+        downloadFile(
+          `systemspion-${Date.now()}.csv`,
+
+          "\uFEFF" + csv,
+
+          "text/csv;charset=utf-8"
+        );
+
+        ui.notifications.info(
+          `${fields.length} Felder als CSV exportiert.`
+        );
+      }
+
+      // ========================================================
+      // BUTTONS
+      // ========================================================
+
+      root.querySelector(
+        "#ssp-scan"
+      ).addEventListener(
+        "click",
+        scanData
+      );
+
+      root.querySelector(
+        "#ssp-schema"
+      ).addEventListener(
+        "click",
+        scanSchema
+      );
+
+      root.querySelector(
+        "#ssp-search"
+      ).addEventListener(
+        "click",
+        searchAll
+      );
+
+      root.querySelector(
+        "#ssp-json"
+      ).addEventListener(
+        "click",
+        exportJSON
+      );
+
+      root.querySelector(
+        "#ssp-csv"
+      ).addEventListener(
+        "click",
+        exportCSV
+      );
+
+      root.querySelector(
+        "#ssp-copy-path"
+      ).addEventListener(
+        "click",
+        () => copyPath()
+      );
+
+      root.querySelector(
+        "#ssp-clear"
+      ).addEventListener(
+        "click",
+        () => {
+
+          left.innerHTML = "";
+
+          right.innerHTML =
+            "Nichts ausgewählt.";
+
+          query.value = "";
+
+          currentFields = [];
+
+          currentData = null;
+
+          currentDocument = null;
+
+          currentEntry = null;
+
+          status.textContent =
+            "Bereit.";
+        }
+      );
+
+      // ========================================================
+      // ENTER = SUCHE
+      // ========================================================
+
+      query.addEventListener(
+        "keydown",
+        event => {
+
+          if (
+            event.key === "Enter"
+          ) {
+            searchAll();
+          }
+        }
+      );
+
+      // ========================================================
+      // INITIALISIERUNG
+      // ========================================================
+
+      populateSelect();
+
+      if (entries.length) {
+
+        select.value = "0";
+
+        currentEntry =
+          entries[0];
+
+        currentDocument =
+          currentEntry.document;
+
+        if (currentDocument) {
+
+          currentData =
+            getDocumentData(
+              currentDocument
+            );
+
+          currentFields =
+            flatten(
+              currentData
+            );
+
+          renderTree();
+        }
+
+        status.textContent =
+          `${entries.length} Datenquellen gefunden.`;
+
+      } else {
+
+        status.textContent =
+          "Keine Datenquellen gefunden.";
+      }
+
+      // ========================================================
+      // COMPENDIUM-INDIZES NACHLADEN
+      // ========================================================
+
+      Promise.allSettled(
+        compendiumPromises
+      )
+        .then(
+          () => {
+
+            populateSelect();
+
+            status.textContent =
+              `${entries.length} Datenquellen gefunden.`;
+          }
+        );
+
+    }
+
+  }, {
+    // v5.4: erst mit diesen Options wird das Fenster überhaupt
+    // größenveränderlich. width/height sind nur Startwerte —
+    // resizable:true erlaubt dem Nutzer, per Ziehen am unteren
+    // rechten Rand frei zu skalieren. Die feste id verhindert,
+    // dass jeder Makro-Aufruf ein weiteres Fenster aufstapelt.
+    id: DIALOG_ID,
+    width: 900,
+    height: 700,
+    resizable: true
+  }).render(true);
+
+})();
