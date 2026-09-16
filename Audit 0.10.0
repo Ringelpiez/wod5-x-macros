@@ -1,0 +1,1920 @@
+/**
+ * ============================================================================
+ * FOUNDRY VTT UI AUTOMATION & AUDITOR FRAMEWORK (v0.10.0)
+ * Single-Source-of-Truth Data Pipeline, Declarative Testing & Focus Graph
+ *
+ * Änderungen gegenüber v0.9.4 (Tab-Discovery + Coverage-Reporting):
+ *  - NEU: detectTabs() erkennt Tab-Gruppen rein aus dem DOM (Konvention
+ *    nav[data-group] > [data-tab]) — unabhängig von internen AppV2-APIs wie
+ *    app.constructor.TABS, die je nach Version/System variieren können.
+ *  - NEU: activateTab() wechselt aktiv durch jeden erkannten Tab (bevorzugt
+ *    über app.changeTab(), Fallback auf simulierten Klick aufs Nav-Element)
+ *    und verifiziert best-effort, ob das Content-Panel danach tatsächlich
+ *    eine Layout-Box hat.
+ *  - NEU: auditAllTabs() wiederholt Scan, AppV2-Checks, Interaktions-Sweep
+ *    und Focus-Graph-Traversal für JEDEN Tab statt nur für den zu
+ *    Laufzeitbeginn aktiven — vorher wurden Tabs, die nicht gerade offen
+ *    waren, schlicht nicht geprüft (Coverage-Lücke, die v0.9.2 durch den
+ *    hasLayoutBox-Fix nur unsichtbar gemacht, aber nicht geschlossen hatte).
+ *  - NEU: dedupeNewFindings() entfernt exakte Duplikate (gleicher
+ *    code+CSS-Pfad+message), die entstehen, wenn dauerhaft sichtbare
+ *    Chrome-Elemente (z.B. der Header) bei jedem Tab-Durchlauf erneut
+ *    gescannt werden. Verschiedene Elemente mit ähnlichem Pfad bleiben
+ *    unangetastet.
+ *  - NEU: auditRun.coverage und eine Coverage-Tabelle im Report zeigen,
+ *    wie viele Tabs pro Gruppe geprüft wurden bzw. nicht erreichbar waren
+ *    (neue Regel UI-TAB-UNREACHABLE). Die "Keine Funde"-Meldung im Report
+ *    nennt jetzt immer die Abdeckung, statt unkommentiert nach "alles
+ *    geprüft und okay" auszusehen.
+ *
+ * Änderungen gegenüber v0.9.3 (drei gezielte Bugfixes nach Code-Review):
+ *  - Fix: UI-004 flaggte JEDES <input>/<textarea> mit einem etwas längeren
+ *    Wert als "Text wird abgeschnitten", da scrollWidth > clientWidth bei
+ *    Formularfeldern normales, natives Browser-Scrollverhalten ist und kein
+ *    Fehler. <input>/<textarea> werden jetzt von UI-004 ausgenommen (der
+ *    Font-Size-vs-Feldhöhe-Fall wird weiterhin von UI-005 erfasst).
+ *    Zusätzlich werden overflow-x/overflow-y jetzt getrennt betrachtet und
+ *    absichtlich scrollbare Container (overflow: auto/scroll) auf der
+ *    jeweiligen Achse nicht mehr als Fehler gewertet.
+ *  - Fix: AssertionEngine.evaluate()s "visible"-Check nutzte noch das alte,
+ *    reine getComputedStyle(el).display-Muster (erfasst keine per
+ *    Vorfahre versteckten Elemente). Jetzt konsistent mit
+ *    scanDOM/sweepInteractiveElements/runFocusGraphTraversal auf
+ *    hasLayoutBox() umgestellt.
+ *  - Fix: Die hartkodierte BASE_DOCUMENT_FIELDS-Liste (name, img, ...) in
+ *    validateDataModelBindings wurde durch eine Live-Prüfung gegen das
+ *    tatsächlich geladene Schema ersetzt (Object.hasOwn(rootField.fields,
+ *    key) für einstufige Pfade) — robuster über Foundry-Versionen hinweg
+ *    und deckt automatisch auch system-eigene Top-Level-Felder ab, statt
+ *    nur eine feste Liste bekannter Core-Felder.
+ *
+ * Änderungen gegenüber v0.9.2:
+ *  - Fix: resolveApp() wartete nach dem Rendern nur fest 150ms auf den
+ *    DOM-Knoten. Bei großen Sheets (viele Items/Tabs) reichte das nicht,
+ *    was zu "Konnte keinen gültigen DOM-Root-Node finden" führte, obwohl
+ *    die App korrekt aufgelöst wurde. Jetzt aktives Polling bis zu 3s.
+ *  - Die Fehlermeldung bei fehlendem DOM-Root-Node enthält jetzt konkrete
+ *    Diagnosedaten (app.rendered, app.element-Typ etc.) statt nur der immer
+ *    gleichen generischen Meldung.
+ *
+ * Änderungen gegenüber v0.9.1:
+ *  - Fix: Elemente in gerade INAKTIVEN Tabs wurden fälschlich als "0x0px
+ *    undersized" (UI-001), "obstructed" (UI-TARGET-OBSTRUCTED) und als
+ *    Auslöser einer Kaskade von "Focus-Trap"-Funden gemeldet. Grund: nur der
+ *    display-Wert des Elements SELBST wurde geprüft — display vererbt sich
+ *    aber nicht, ein Kind eines display:none-Vorfahren meldet trotzdem einen
+ *    "normalen" eigenen display-Wert. Neue Utility hasLayoutBox() nutzt
+ *    stattdessen getClientRects().length, was auch versteckte Vorfahren
+ *    korrekt erfasst. Betraf in einem Testlauf ca. 75% aller Funde.
+ *  - Fix: runFocusGraphTraversal nahm fehlgeschlagene .focus()-Versuche
+ *    weiterhin als Graph-Kante auf; wenn activeElement dabei auf
+ *    document.body zurückfiel, erzeugte das hunderte falsche
+ *    UI-FOCUS-TRAP-DETECTED-Funde in Serie. Fehlgeschlagene Versuche werden
+ *    jetzt zu einem einzelnen UI-FOCUS-UNREACHABLE-Hinweis zusammengefasst.
+ *  - Fix: UI-BINDING-ORPHANED meldete das Basis-Feld "name" als fehlend,
+ *    obwohl es in jedem Foundry-Document garantiert existiert. Bekannte
+ *    Basis-Document-Felder (name, img, type, folder, sort, ownership,
+ *    flags, _stats, _id) werden jetzt nie mehr gemeldet.
+ *
+ * Änderungen gegenüber v0.9.0:
+ *  - Fix: runSuite() akzeptiert jetzt Actor-/Item-Namen (String), ein
+ *    Actor-/Item-Dokument oder eine fertige App-Instanz statt zwingend eine
+ *    App-Instanz zu erwarten. Grund: ApplicationV2-Sheets stehen in Foundry
+ *    v12+ NICHT in ui.windows (nur AppV1-Fenster tun das), weshalb die
+ *    früher empfohlene Suche über Object.values(ui.windows).find(...) bei
+ *    vielen v13/v14-Systemen ins Leere lief ("Could not resolve valid DOM
+ *    root node"). Neue Methode TestRunner.resolveApp() sucht jetzt in
+ *    Actors/Items, ui.windows UND foundry.applications.instances und
+ *    rendert das Sheet bei Bedarf automatisch.
+ *  - Klarere Fehlermeldungen statt der kryptischen Root-Node-Exception.
+ *
+ * Änderungen gegenüber v0.8.0:
+ *  - Action-Mapping-Validierung (AppV2-spezifisch): gleicht [data-action] im DOM
+ *    gegen app.options.actions ab, meldet "orphaned" (Klick tut nichts) und
+ *    "unused" (registriert, aber kein Element) Actions
+ *  - JS-Fehler-Erfassung: window.onerror, unhandledrejection und console.error
+ *    werden während Sweep und Test-Steps mitgeschnitten und dem jeweils
+ *    auslösenden Klick/Step zugeordnet, statt (wie zuvor) im try/catch verschluckt
+ *    zu werden
+ *  - DataModel-Schema-Abgleich: name-Attribute von Formularfeldern werden gegen
+ *    document.schema bzw. document.system.schema geprüft; nicht auflösbare
+ *    Pfade (Arrays, ObjectFields, fehlendes Schema) werden bewusst NICHT
+ *    gemeldet, um False Positives zu vermeiden — nur eindeutig fehlende
+ *    SchemaField-Pfade
+ *
+ * Änderungen gegenüber v0.7.0 (siehe v0.8.0-Release für Details):
+ *  - Echter Dry-Run-Modus (keine realen Klicks, nur simulierte Auswertung)
+ *  - Deny-Keyword-Liste jetzt lokalisierbar/erweiterbar (inkl. deutscher Begriffe)
+ *  - mode ("light" | "standard" | "deep") steuert jetzt tatsächlich, welche
+ *    Phasen laufen, statt nur durchgereicht zu werden
+ *  - allowedCategories aus SafetyPolicyEngine entfernt (war totes Feld, da DOM-
+ *    Elemente keine Kategorie tragen — das täuschte Granularität vor, die es
+ *    nicht gab)
+ *  - Markdown-Report: Tabellenzeile für Total Findings korrigiert (Spaltenzahl)
+ *  - document.activeElement wird nach dem Focus-Graph-Sweep wiederhergestellt
+ *  - UI-001 ignoriert jetzt bekannte Foundry-Icon-Controls per konfigurierbarer
+ *    ignoreSelectors-Liste, um Rausch-Warnings auf Item-Controls zu vermeiden
+ *  - Deny-Keyword-Regexe werden einmalig vorkompiliert statt pro Element
+ *  - Deutlicher Warnhinweis beim Start, da das Tool reale Klicks auslösen kann
+ *  - Neue Regel UI-004: erkennt Text-Overflow innerhalb eines Elements
+ *    (Schriftgröße passt nicht ins Feld, scrollWidth/Height > clientWidth/Height)
+ *  - Neue Regel UI-005: erkennt line-height < font-size (Zeile geometrisch zu
+ *    klein für die Schriftgröße, Unterlängen/Umlaute werden abgeschnitten)
+ * ============================================================================
+ */
+
+(() => {
+  // ==========================================================================
+  // Utility Methods
+  // ==========================================================================
+
+  function generateUUID() {
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+      try { return crypto.randomUUID(); } catch (e) {}
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+      const r = Math.random() * 16 | 0;
+      const v = c === 'x' ? r : (r & 0x3 | 0x8);
+      return v.toString(16);
+    });
+  }
+
+  function safeCSSEscape(val) {
+    if (!val) return "";
+    if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+      return CSS.escape(val);
+    }
+    return String(val).replace(/([!#$%&'()*+,./:;<=>?@[\\\]^`{|}~])/g, "\\$1");
+  }
+
+  function getNativeElement(app) {
+    if (!app) return null;
+    if (app instanceof HTMLElement) return app;
+    let el = app.element;
+    if (el && el[0] instanceof HTMLElement) return el[0];
+    if (el instanceof HTMLElement) return el;
+    if (app.id) {
+      const domEl = document.getElementById(app.id);
+      if (domEl) return domEl;
+    }
+    return null;
+  }
+
+  /**
+   * Zuverlässige, günstige Prüfung, ob ein Element überhaupt eine Layout-Box
+   * hat — also tatsächlich gerendert wird. Anders als ein reiner Check von
+   * `getComputedStyle(el).display`, der nur den Wert AM ELEMENT SELBST prüft
+   * (display vererbt sich nicht in CSS!), erfasst getClientRects().length===0
+   * zuverlässig auch den Fall, dass ein VORFAHRE display:none hat — z.B. ein
+   * Formularfeld in einem gerade inaktiven Foundry-Tab. Deckt NICHT
+   * visibility:hidden ab (das wird an den Aufrufstellen separat geprüft).
+   */
+  function hasLayoutBox(el) {
+    return !!(el && el instanceof HTMLElement && el.getClientRects && el.getClientRects().length > 0);
+  }
+
+  /**
+   * Schneidet JS-Fehler während eines Audit-Laufs mit, die sonst im
+   * try/catch der Sweep-Logik verschwinden würden (z.B. Exceptions in einem
+   * Action-Handler, die als Reaktion auf einen automatisierten Klick
+   * geworfen werden). Erfasst:
+   *  - window "error" Events (synchron geworfene, unbehandelte Exceptions)
+   *  - "unhandledrejection" Events (async/Promise-Fehler, in Foundry häufig
+   *    bei await-basierten Action-Handlern)
+   *  - console.error-Aufrufe (viele Foundry-Systeme loggen Fehler statt sie
+   *    zu werfen)
+   * start()/stop() müssen paarig aufgerufen werden; stop() stellt console.error
+   * zuverlässig wieder her, auch wenn der Lauf mit einer Exception abbricht.
+   */
+  class ErrorCapture {
+    constructor() {
+      this.errors = [];
+      this._active = false;
+      this._onError = null;
+      this._onRejection = null;
+      this._origConsoleError = null;
+    }
+
+    start() {
+      if (this._active) return;
+      this._active = true;
+
+      this._onError = (event) => {
+        this.errors.push({
+          source: "window.onerror",
+          message: event?.message || String(event?.error?.message || event?.error || "Unknown error"),
+          stack: event?.error?.stack || null,
+          timestamp: new Date().toISOString()
+        });
+      };
+      this._onRejection = (event) => {
+        const reason = event?.reason;
+        this.errors.push({
+          source: "unhandledrejection",
+          message: (reason && reason.message) || String(reason),
+          stack: (reason && reason.stack) || null,
+          timestamp: new Date().toISOString()
+        });
+      };
+
+      window.addEventListener("error", this._onError);
+      window.addEventListener("unhandledrejection", this._onRejection);
+
+      this._origConsoleError = console.error;
+      const self = this;
+      console.error = function (...args) {
+        try {
+          const message = args.map(a => {
+            if (a instanceof Error) return a.message + (a.stack ? `\n${a.stack}` : "");
+            if (typeof a === "string") return a;
+            try { return JSON.stringify(a); } catch (e) { return String(a); }
+          }).join(" ");
+          self.errors.push({ source: "console.error", message, stack: null, timestamp: new Date().toISOString() });
+        } catch (e) { /* Erfassung darf niemals selbst den Lauf crashen */ }
+        self._origConsoleError.apply(console, args);
+      };
+    }
+
+    stop() {
+      if (!this._active) return;
+      if (this._onError) window.removeEventListener("error", this._onError);
+      if (this._onRejection) window.removeEventListener("unhandledrejection", this._onRejection);
+      if (this._origConsoleError) console.error = this._origConsoleError;
+      this._active = false;
+    }
+
+    get length() { return this.errors.length; }
+
+    sinceIndex(idx) { return this.errors.slice(idx); }
+  }
+
+  // ==========================================================================
+  // 1. SINGLE SOURCE OF TRUTH DATA MODEL
+  // ==========================================================================
+
+  class AuditRun {
+    constructor(scope = "global", mode = "standard", safetyPolicy = "safe", dryRun = false) {
+      this.id = `run-${generateUUID()}`;
+      this.scope = scope;
+      this.mode = mode; // light, standard, deep
+      this.safetyPolicy = safetyPolicy;
+      this.dryRun = dryRun;
+      this.startedAt = new Date().toISOString();
+      this.finishedAt = null;
+      this.durationMs = 0;
+      this.status = "running"; // running, completed, failed, cancelled
+      this.failureReason = null;
+      this.findings = [];
+      this.testCases = [];
+      this.focusGraph = null;
+      this.coverage = null; // { groups: [{ group, tabsTotal, tabsScanned, tabsUnreachable }] }
+    }
+
+    addFinding(findingData) {
+      const normalizedFinding = {
+        id: generateUUID(),
+        runId: this.id,
+        timestamp: new Date().toISOString(),
+        code: findingData.code || "UNKNOWN-CODE",
+        category: findingData.category || "general",
+        severity: findingData.severity || "info",
+        confidence: findingData.confidence || "medium",
+        message: findingData.message || "No detailed description provided.",
+        remediation: findingData.remediation || "",
+        evidence: findingData.evidence || {},
+        node: findingData.node || null
+      };
+
+      this.findings.push(normalizedFinding);
+      return normalizedFinding;
+    }
+
+    addTestCase(testCase) {
+      this.testCases.push(testCase);
+      return testCase;
+    }
+
+    finish() {
+      if (this.status !== "running") return this;
+      this.finishedAt = new Date().toISOString();
+      this.durationMs = new Date(this.finishedAt) - new Date(this.startedAt);
+      this.status = "completed";
+      FindingStore.registerRun(this);
+      return this;
+    }
+
+    fail(errorOrReason) {
+      this.finishedAt = new Date().toISOString();
+      this.durationMs = new Date(this.finishedAt) - new Date(this.startedAt);
+      this.status = "failed";
+      this.failureReason = typeof errorOrReason === "string" ? errorOrReason : errorOrReason?.message || "Unknown Failure";
+      FindingStore.registerRun(this);
+      return this;
+    }
+
+    cancel(reason = "User initiated cancellation") {
+      this.finishedAt = new Date().toISOString();
+      this.durationMs = new Date(this.finishedAt) - new Date(this.startedAt);
+      this.status = "cancelled";
+      this.failureReason = reason;
+      FindingStore.registerRun(this);
+      return this;
+    }
+  }
+
+  class FindingStore {
+    static completedRuns = new Map();
+    static maxStoredRuns = 50;
+
+    static registerRun(auditRun) {
+      if (this.completedRuns.size >= this.maxStoredRuns) {
+        const oldestKey = this.completedRuns.keys().next().value;
+        this.completedRuns.delete(oldestKey);
+      }
+      this.completedRuns.set(auditRun.id, auditRun);
+    }
+
+    static getRun(runId) {
+      return this.completedRuns.get(runId) || null;
+    }
+
+    static getAllFindings() {
+      const all = [];
+      for (const run of this.completedRuns.values()) {
+        all.push(...run.findings);
+      }
+      return all;
+    }
+
+    static clear() {
+      this.completedRuns.clear();
+    }
+  }
+
+  // ==========================================================================
+  // 2. IDENTITY & MULTI-STRATEGY LOCATOR ENGINE
+  // ==========================================================================
+
+  class AppIdentityManager {
+    static instanceMap = new WeakMap();
+    static instanceCounters = new Map();
+
+    static getScope(app) {
+      if (!app) return "global";
+      const className = app.constructor?.name || "Application";
+      let meta = this.instanceMap.get(app);
+
+      if (!meta) {
+        const count = (this.instanceCounters.get(className) || 0) + 1;
+        this.instanceCounters.set(className, count);
+        meta = {
+          instanceId: `${className}#${count}`,
+          uuid: generateUUID(),
+          className,
+          title: app.title || app.id || "Untitled"
+        };
+        this.instanceMap.set(app, meta);
+      }
+
+      return `${meta.instanceId} [${meta.title}]`;
+    }
+  }
+
+  class ElementLocatorEngine {
+    static locate(descriptor, rootNode = document) {
+      if (!descriptor) return null;
+      if (descriptor instanceof HTMLElement) return descriptor;
+
+      // Priority 1: ID
+      if (descriptor.stableId) {
+        const el = rootNode.querySelector(`#${safeCSSEscape(descriptor.stableId)}`);
+        if (el) return el;
+      }
+
+      // Priority 2: Data-Action
+      if (descriptor.dataAction) {
+        const el = rootNode.querySelector(`[data-action="${safeCSSEscape(descriptor.dataAction)}"]`);
+        if (el) return el;
+      }
+
+      // Priority 3: Name attribute
+      if (descriptor.name) {
+        const el = rootNode.querySelector(`[name="${safeCSSEscape(descriptor.name)}"]`);
+        if (el) return el;
+      }
+
+      // Priority 4: Role + Accessible Name
+      if (descriptor.role && descriptor.accessibleName) {
+        const candidates = Array.from(rootNode.querySelectorAll(`[role="${descriptor.role}"]`));
+        const match = candidates.find(c => UIInspector.getAccessibleNameHeuristic(c) === descriptor.accessibleName);
+        if (match) return match;
+      }
+
+      // Priority 5: Fallback CSS Path / Selector String
+      const cssSelector = typeof descriptor === "string" ? descriptor : descriptor.css;
+      if (cssSelector) {
+        try {
+          return rootNode.querySelector(cssSelector);
+        } catch (e) {
+          return null;
+        }
+      }
+
+      return null;
+    }
+
+    static createDescriptor(element) {
+      if (!element || !(element instanceof HTMLElement)) return null;
+      return {
+        stableId: element.id || null,
+        dataAction: element.getAttribute("data-action") || null,
+        name: element.getAttribute("name") || null,
+        role: element.getAttribute("role") || element.tagName.toLowerCase(),
+        css: UIInspector.getDOMPath(element),
+        accessibleName: UIInspector.getAccessibleNameHeuristic(element)
+      };
+    }
+  }
+
+  // ==========================================================================
+  // 3. SAFETY POLICY ENGINE (lokalisierbar, vorkompilierte Regexe)
+  // ==========================================================================
+
+  class SafetyPolicyEngine {
+    // Deny-Keywords sind bewusst zweisprachig (EN/DE), da viele Foundry-Systeme
+    // (insbesondere deutschsprachige Custom-Systeme) data-action/Label/Text auf
+    // Deutsch führen. Über extraDenyKeywords lassen sich systemspezifische
+    // Begriffe zur Laufzeit ergänzen, ohne den Kern anzufassen.
+    static POLICIES = {
+      safe: {
+        denyKeywords: [
+          "delete", "destroy", "remove", "reset", "clear", "purge", "import",
+          "export", "execute", "unlink", "wipe",
+          "löschen", "entfernen", "zurücksetzen", "leeren", "vernichten",
+          "importieren", "exportieren", "ausführen", "verknüpfung aufheben"
+        ]
+      },
+      standard: {
+        denyKeywords: [
+          "delete", "destroy", "purge", "wipe", "unlink",
+          "löschen", "vernichten", "verknüpfung aufheben"
+        ]
+      },
+      aggressive: {
+        denyKeywords: []
+      }
+    };
+
+    static _compiledCache = new Map();
+
+    static _getCompiledKeywords(policyName, extraDenyKeywords = []) {
+      const cacheKey = `${policyName}::${extraDenyKeywords.join(",")}`;
+      if (this._compiledCache.has(cacheKey)) return this._compiledCache.get(cacheKey);
+
+      const policy = this.POLICIES[policyName] || this.POLICIES.safe;
+      const allKeywords = [...policy.denyKeywords, ...extraDenyKeywords];
+      const compiled = allKeywords.map(kw => ({
+        keyword: kw,
+        regex: new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i")
+      }));
+
+      this._compiledCache.set(cacheKey, compiled);
+      return compiled;
+    }
+
+    /**
+     * @param {HTMLElement} element
+     * @param {string} policyName - "safe" | "standard" | "aggressive"
+     * @param {string[]} extraDenyKeywords - zusätzliche, z.B. systemspezifische Begriffe
+     */
+    static evaluate(element, policyName = "safe", extraDenyKeywords = []) {
+      if (!element || !(element instanceof HTMLElement)) {
+        return { allowed: false, reason: "invalid-element", matchedKeyword: null, riskLevel: "high" };
+      }
+
+      if (policyName === "aggressive" && extraDenyKeywords.length === 0) {
+        return { allowed: true, reason: "policy-aggressive", matchedKeyword: null, riskLevel: "high" };
+      }
+
+      const action = (element.getAttribute("data-action") || "").toLowerCase();
+      const name = (element.getAttribute("name") || "").toLowerCase();
+      const id = (element.id || "").toLowerCase();
+      const text = (element.textContent || "").toLowerCase();
+      const aria = (element.getAttribute("aria-label") || "").toLowerCase();
+      const title = (element.getAttribute("title") || "").toLowerCase();
+      const classes = Array.from(element.classList).join(" ").toLowerCase();
+
+      const combinedStr = `${action} ${name} ${id} ${text} ${aria} ${title} ${classes}`;
+      const compiledKeywords = this._getCompiledKeywords(policyName, extraDenyKeywords);
+
+      for (const { keyword, regex } of compiledKeywords) {
+        if (regex.test(combinedStr)) {
+          return {
+            allowed: false,
+            reason: "destructive-keyword-matched",
+            matchedKeyword: keyword,
+            riskLevel: policyName === "safe" ? "high" : "medium"
+          };
+        }
+      }
+
+      return { allowed: true, reason: "policy-pass", matchedKeyword: null, riskLevel: "low" };
+    }
+  }
+
+  // ==========================================================================
+  // 4. ADVANCED GEOMETRY & MULTI-POINT HIT-TESTING ENGINE
+  // ==========================================================================
+
+  class AdvancedGeometryEngine {
+    static isHittableMultiPoint(element) {
+      const rect = element.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) {
+        return { isHittable: false, hitCoverage: 0, blockedPoints: 5, obstruction: null };
+      }
+
+      if (rect.bottom < 0 || rect.right < 0 || rect.left > window.innerWidth || rect.top > window.innerHeight) {
+        return { isHittable: false, hitCoverage: 0, blockedPoints: 5, obstruction: "OUT_OF_VIEWPORT" };
+      }
+
+      const points = [
+        { name: "center", x: rect.left + rect.width * 0.5, y: rect.top + rect.height * 0.5 },
+        { name: "topLeft", x: rect.left + rect.width * 0.1, y: rect.top + rect.height * 0.1 },
+        { name: "topRight", x: rect.left + rect.width * 0.9, y: rect.top + rect.height * 0.1 },
+        { name: "bottomLeft", x: rect.left + rect.width * 0.1, y: rect.top + rect.height * 0.9 },
+        { name: "bottomRight", x: rect.left + rect.width * 0.9, y: rect.top + rect.height * 0.9 }
+      ];
+
+      let passedPoints = 0;
+      let primaryObstruction = null;
+
+      for (const p of points) {
+        const topEl = document.elementFromPoint(p.x, p.y);
+        if (topEl && (element === topEl || element.contains(topEl))) {
+          passedPoints++;
+        } else if (!primaryObstruction && topEl) {
+          primaryObstruction = {
+            tagName: topEl.tagName.toLowerCase(),
+            id: topEl.id || null,
+            classes: Array.from(topEl.classList).slice(0, 5),
+            path: UIInspector.getDOMPath(topEl),
+            zIndex: window.getComputedStyle(topEl).zIndex
+          };
+        }
+      }
+
+      const coverage = passedPoints / points.length;
+      return {
+        isHittable: coverage > 0,
+        hitCoverage: coverage,
+        blockedPoints: points.length - passedPoints,
+        obstruction: primaryObstruction
+      };
+    }
+
+    static getVisibleAreaPercentage(element) {
+      const rect = element.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return { percent: 0, status: "ZERO_SIZE" };
+
+      let visibleBox = {
+        left: Math.max(rect.left, 0),
+        top: Math.max(rect.top, 0),
+        right: Math.min(rect.right, window.innerWidth),
+        bottom: Math.min(rect.bottom, window.innerHeight)
+      };
+
+      let parent = element.parentElement;
+      while (parent && parent !== document.documentElement) {
+        const style = window.getComputedStyle(parent);
+        const clipsX = ["hidden", "clip", "auto", "scroll"].includes(style.overflowX);
+        const clipsY = ["hidden", "clip", "auto", "scroll"].includes(style.overflowY);
+
+        if (clipsX || clipsY) {
+          const parentRect = parent.getBoundingClientRect();
+          if (clipsX) {
+            visibleBox.left = Math.max(visibleBox.left, parentRect.left);
+            visibleBox.right = Math.min(visibleBox.right, parentRect.right);
+          }
+          if (clipsY) {
+            visibleBox.top = Math.max(visibleBox.top, parentRect.top);
+            visibleBox.bottom = Math.min(visibleBox.bottom, parentRect.bottom);
+          }
+        }
+        parent = parent.parentElement;
+      }
+
+      const visibleWidth = Math.max(0, visibleBox.right - visibleBox.left);
+      const visibleHeight = Math.max(0, visibleBox.bottom - visibleBox.top);
+      const ratio = Math.round(((visibleWidth * visibleHeight) / (rect.width * rect.height)) * 100);
+
+      let status = "VISIBLE";
+      if (ratio === 0) status = "FULLY_CLIPPED_BY_ANCESTOR";
+      else if (ratio < 95) status = "PARTIALLY_CLIPPED";
+
+      return { percent: ratio, status, visibleBox };
+    }
+  }
+
+  // ==========================================================================
+  // 5. GRAPH-BASED FOCUS ENGINE
+  // ==========================================================================
+
+  class FocusGraph {
+    constructor() {
+      this.nodes = new Map();
+      this.edges = [];
+    }
+
+    addNode(element) {
+      const descriptor = ElementLocatorEngine.createDescriptor(element);
+      if (!descriptor) return null;
+      const key = descriptor.css;
+      if (!this.nodes.has(key)) {
+        this.nodes.set(key, { key, descriptor, element });
+      }
+      return key;
+    }
+
+    addEdge(fromKey, toKey, trigger = "tab") {
+      this.edges.push({ from: fromKey, to: toKey, trigger, timestamp: new Date().toISOString() });
+    }
+
+    analyzePatterns(auditRun) {
+      if (this.edges.length < 2) return;
+
+      for (let i = 0; i < this.edges.length - 1; i++) {
+        const e1 = this.edges[i];
+        const e2 = this.edges[i + 1];
+        if (e1.from === e2.to && e1.to === e2.from) {
+          const nodeData = this.nodes.get(e1.to);
+          auditRun.addFinding({
+            code: "UI-FOCUS-TRAP-DETECTED",
+            category: "accessibility",
+            severity: "error",
+            confidence: "high",
+            message: `Focus cycle trapped ping-ponging between elements.`,
+            remediation: "Ensure natural tabindex progression or update keydown handlers.",
+            evidence: { trappedBetween: [e1.from, e1.to] },
+            node: nodeData?.descriptor || null
+          });
+        }
+      }
+
+      const bodyEscapes = this.edges.filter(e => e.to && e.to.includes("body"));
+      if (bodyEscapes.length > 0) {
+        auditRun.addFinding({
+          code: "UI-FOCUS-ESCAPED-TO-BODY",
+          category: "accessibility",
+          severity: "warning",
+          confidence: "high",
+          message: `Focus escaped the application scope and dropped to document.body ${bodyEscapes.length} times during keyboard navigation.`,
+          remediation: "Wrap focused components in an accessible modal loop or maintain internal active focus state.",
+          evidence: { escapeCount: bodyEscapes.length }
+        });
+      }
+    }
+  }
+
+  // ==========================================================================
+  // 6. DECLARATIVE STEP & ASSERTION ENGINE
+  // ==========================================================================
+
+  class AssertionEngine {
+    static evaluate(targetElement, expectation) {
+      const results = [];
+
+      if (expectation.visible !== undefined) {
+        // hasLayoutBox statt reinem getComputedStyle(el).display-Check auf dem
+        // Element selbst — konsistent mit scanDOM/sweepInteractiveElements/
+        // runFocusGraphTraversal, sonst reißt genau der Bug wieder auf, der
+        // in v0.9.2 an den anderen drei Stellen behoben wurde (display
+        // vererbt sich nicht, ein Vorfahre mit display:none wird sonst nicht erkannt).
+        const isVisible = !!targetElement && hasLayoutBox(targetElement) && window.getComputedStyle(targetElement).visibility !== "hidden";
+        results.push({ type: "visible", passed: isVisible === expectation.visible, expected: expectation.visible, actual: isVisible });
+      }
+
+      if (expectation.focused !== undefined) {
+        const isFocused = targetElement && document.activeElement === targetElement;
+        results.push({ type: "focused", passed: isFocused === expectation.focused, expected: expectation.focused, actual: isFocused });
+      }
+
+      if (expectation.textContains !== undefined) {
+        const text = targetElement ? targetElement.textContent.trim() : "";
+        const passed = text.includes(expectation.textContains);
+        results.push({ type: "textContains", passed, expected: expectation.textContains, actual: text });
+      }
+
+      if (expectation.classPresent !== undefined) {
+        const hasClass = targetElement ? targetElement.classList.contains(expectation.classPresent) : false;
+        results.push({ type: "classPresent", passed: hasClass, expected: expectation.classPresent, actual: targetElement ? Array.from(targetElement.classList) : [] });
+      }
+
+      if (expectation.attributeEquals) {
+        const { name, value } = expectation.attributeEquals;
+        const attrVal = targetElement ? targetElement.getAttribute(name) : null;
+        results.push({ type: "attributeEquals", passed: attrVal === value, expected: `${name}="${value}"`, actual: `${name}="${attrVal}"` });
+      }
+
+      const allPassed = results.every(r => r.passed);
+      return { passed: allPassed, assertions: results };
+    }
+  }
+
+  class TestStep {
+    constructor(descriptor) {
+      this.id = `step-${generateUUID()}`;
+      this.action = descriptor.action; // click, focus, type, wait
+      this.targetLocator = descriptor.target;
+      this.expect = descriptor.expect || null;
+      this.status = "pending";
+      this.startedAt = null;
+      this.finishedAt = null;
+      this.error = null;
+      this.assertionResult = null;
+    }
+
+    async execute(rootNode, { dryRun = false } = {}) {
+      this.startedAt = new Date().toISOString();
+      const targetEl = ElementLocatorEngine.locate(this.targetLocator, rootNode);
+
+      if (!targetEl && this.action !== "wait") {
+        this.status = "failed";
+        this.error = `Element not found for locator: ${JSON.stringify(this.targetLocator)}`;
+        this.finishedAt = new Date().toISOString();
+        return false;
+      }
+
+      try {
+        if (dryRun && this.action !== "wait") {
+          // Im Dry-Run wird die Aktion nicht wirklich ausgeführt, nur bestätigt,
+          // dass das Ziel auffindbar wäre.
+          this.status = "passed";
+          this.finishedAt = new Date().toISOString();
+          return true;
+        }
+
+        if (this.action === "click") {
+          targetEl.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+        } else if (this.action === "focus") {
+          targetEl.focus();
+        } else if (this.action === "type") {
+          targetEl.value = this.targetLocator.value || "";
+          targetEl.dispatchEvent(new Event("input", { bubbles: true }));
+        } else if (this.action === "wait") {
+          await new Promise(res => setTimeout(res, this.targetLocator.delayMs || 100));
+        }
+
+        if (this.expect) {
+          this.assertionResult = AssertionEngine.evaluate(targetEl, this.expect);
+          this.status = this.assertionResult.passed ? "passed" : "failed";
+        } else {
+          this.status = "passed";
+        }
+      } catch (err) {
+        this.status = "failed";
+        this.error = err.message;
+      }
+
+      this.finishedAt = new Date().toISOString();
+      return this.status === "passed";
+    }
+  }
+
+  class TestCase {
+    constructor(name, stepsDescriptors = []) {
+      this.id = `test-${generateUUID()}`;
+      this.name = name;
+      this.steps = stepsDescriptors.map(d => new TestStep(d));
+      this.status = "pending";
+    }
+
+    async run(rootNode, auditRun, options = {}) {
+      this.status = "running";
+      console.log(`[TestCase] Running: ${this.name}${options.dryRun ? " (dry-run)" : ""}`);
+
+      const { errorCapture, dryRun } = options;
+
+      for (const step of this.steps) {
+        const errorStartIdx = errorCapture ? errorCapture.length : 0;
+        const success = await step.execute(rootNode, options);
+
+        // JS-Fehler, die durch diesen Step ausgelöst wurden, unabhängig vom
+        // Pass/Fail-Status der Assertion melden — ein Step kann seine
+        // Assertion erfüllen und trotzdem im Hintergrund einen Fehler werfen.
+        if (errorCapture && !dryRun) {
+          const newErrors = errorCapture.sinceIndex(errorStartIdx);
+          if (newErrors.length > 0) {
+            auditRun.addFinding({
+              code: "UI-RUNTIME-ERROR",
+              category: "functional",
+              severity: "error",
+              confidence: "high",
+              message: `Test-Step [${step.action}] in "${this.name}" hat ${newErrors.length} JS-Fehler ausgelöst: ${newErrors[0].message}`,
+              remediation: "Stacktrace in evidence.errors prüfen; Fehlerbehandlung im Action-Handler ergänzen.",
+              evidence: { stepId: step.id, errors: newErrors }
+            });
+          }
+        }
+
+        if (!success) {
+          this.status = "failed";
+          auditRun.addFinding({
+            code: "UI-TEST-STEP-FAILURE",
+            category: "functional",
+            severity: "error",
+            confidence: "high",
+            message: `Test step [${step.action}] failed in test "${this.name}": ${step.error || "Assertion failed"}`,
+            evidence: { stepId: step.id, assertionResult: step.assertionResult }
+          });
+          return false;
+        }
+      }
+
+      this.status = "passed";
+      return true;
+    }
+  }
+
+  // ==========================================================================
+  // 7. UI INSPECTOR & RULE ENGINE
+  // ==========================================================================
+
+  class UIInspector {
+    static inspect(element, context = {}) {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+
+      return {
+        node: {
+          tagName: element.tagName.toLowerCase(),
+          id: element.id || null,
+          classes: Array.from(element.classList).slice(0, 15),
+          path: this.getDOMPath(element),
+          accessibleName: this.getAccessibleNameHeuristic(element),
+          appScope: context.appScope || "global"
+        },
+        geometry: { width: rect.width, height: rect.height, top: rect.top, left: rect.left, right: rect.right, bottom: rect.bottom },
+        style: { display: style.display, visibility: style.visibility, overflow: style.overflow, position: style.position, zIndex: style.zIndex, pointerEvents: style.pointerEvents },
+        context
+      };
+    }
+
+    static getDOMPath(el) {
+      const stack = [];
+      while (el && el.parentNode != null) {
+        let sibIndex = 0;
+        let sibCount = 0;
+        for (let i = 0; i < el.parentNode.childNodes.length; i++) {
+          const sib = el.parentNode.childNodes[i];
+          if (sib.nodeName === el.nodeName) {
+            if (sib === el) sibIndex = sibCount;
+            sibCount++;
+          }
+        }
+        const nodeName = el.nodeName.toLowerCase();
+        if (el.hasAttribute("id") && el.id !== "") {
+          stack.unshift(`${nodeName}#${safeCSSEscape(el.id)}`);
+          break;
+        } else if (sibCount > 1) {
+          stack.unshift(`${nodeName}:nth-of-type(${sibIndex + 1})`);
+        } else {
+          stack.unshift(nodeName);
+        }
+        el = el.parentNode;
+      }
+      return stack.join(" > ");
+    }
+
+    static getAccessibleNameHeuristic(el) {
+      if (el.getAttribute("aria-label")) return el.getAttribute("aria-label").trim();
+
+      const labelledBy = el.getAttribute("aria-labelledby");
+      if (labelledBy) {
+        const ids = labelledBy.trim().split(/\s+/);
+        const labels = ids.map(id => document.getElementById(id)).filter(Boolean).map(lbl => lbl.textContent.trim()).filter(Boolean);
+        if (labels.length > 0) return labels.join(" ");
+      }
+
+      if (el.id) {
+        const labelEl = document.querySelector(`label[for="${safeCSSEscape(el.id)}"]`);
+        if (labelEl) return labelEl.textContent.trim();
+      }
+
+      if (el.title) return el.title.trim();
+      if (el.tagName === "IMG" && el.hasAttribute("alt")) return el.getAttribute("alt").trim();
+      if (['BUTTON', 'A'].includes(el.tagName)) return el.textContent?.trim().substring(0, 30) || "";
+
+      return "";
+    }
+  }
+
+  class RuleEngine {
+    static rules = new Map();
+
+    static registerRule(rule) {
+      if (!rule.code || !rule.category || !rule.severity || typeof rule.evaluate !== "function") {
+        throw new Error(`Rule registration failed. Missing required fields in rule: ${rule?.code || 'UNKNOWN'}`);
+      }
+      this.rules.set(rule.code, rule);
+    }
+
+    static evaluateElement(element, inspectionData, ruleOptions = {}) {
+      const results = [];
+      for (const rule of this.rules.values()) {
+        try {
+          const finding = rule.evaluate(element, inspectionData, ruleOptions);
+          if (finding) {
+            results.push({
+              code: rule.code,
+              category: rule.category,
+              severity: finding.severity || rule.severity,
+              confidence: finding.confidence || rule.confidence || "medium",
+              message: finding.message || rule.description,
+              remediation: finding.remediation || rule.remediation,
+              evidence: finding.evidence || {},
+              node: inspectionData.node
+            });
+          }
+        } catch (err) {
+          results.push({
+            code: "AUDITOR-RULE-ERROR",
+            category: "internal",
+            severity: "error",
+            confidence: "high",
+            message: `Exception running rule [${rule.code}]: ${err.message}`,
+            remediation: "Check rule logic for unhandled exceptions.",
+            evidence: { errorStack: err.stack, ruleCode: rule.code },
+            node: inspectionData.node
+          });
+        }
+      }
+      return results;
+    }
+  }
+
+  // --- CORE AUDIT RULES ---
+
+  // Bekannte Foundry-Icon-Controls, die absichtlich klein sind (Item-Controls,
+  // Effekt-Toggles etc.). Über ruleOptions.ignoreSelectors erweiterbar, damit
+  // eigene Systeme (WFRP2e, mta-Reskin, Hunter-Sheet ...) eigene Ausnahmen
+  // definieren können, ohne die Regel selbst anzufassen.
+  const DEFAULT_UI001_IGNORE_SELECTORS = [
+    '.item-control', '.effect-control', '.rollable.skill-die',
+    '[data-tooltip]', '.config-button', '.inline-icon'
+  ];
+
+  RuleEngine.registerRule({
+    code: "UI-001",
+    category: "usability",
+    severity: "warning",
+    confidence: "high",
+    description: "Interactive target smaller than 24x24px.",
+    remediation: "Increase target padding or dimensions, or add to ignoreSelectors if intentional.",
+    evaluate(element, data, ruleOptions = {}) {
+      const isInteractive = ['BUTTON', 'A', 'INPUT', 'SELECT', 'TEXTAREA'].includes(element.tagName) || element.hasAttribute('data-action');
+      if (!isInteractive) return null;
+
+      const ignoreSelectors = ruleOptions.ui001IgnoreSelectors || DEFAULT_UI001_IGNORE_SELECTORS;
+      if (ignoreSelectors.some(sel => { try { return element.matches(sel); } catch (e) { return false; } })) {
+        return null;
+      }
+
+      const { width, height } = data.geometry;
+      if (width < 24 || height < 24) {
+        return {
+          message: `Interactive element <${data.node.tagName}> is undersized (${Math.round(width)}x${Math.round(height)}px).`,
+          evidence: { width, height, minRecommended: "24x24px" }
+        };
+      }
+      return null;
+    }
+  });
+
+  RuleEngine.registerRule({
+    code: "UI-003",
+    category: "layout",
+    severity: "warning",
+    confidence: "high",
+    description: "Element layout clipped by ancestor bounds.",
+    remediation: "Fix container bounds or CSS overflow settings.",
+    evaluate(element) {
+      const clipping = AdvancedGeometryEngine.getVisibleAreaPercentage(element);
+      if (clipping.status === "FULLY_CLIPPED_BY_ANCESTOR") {
+        return { severity: "error", message: `Element <${element.tagName.toLowerCase()}> is 100% clipped out of view by ancestor overflow.`, evidence: clipping };
+      } else if (clipping.status === "PARTIALLY_CLIPPED") {
+        return { severity: "warning", message: `Element <${element.tagName.toLowerCase()}> is partially clipped (${clipping.percent}% visible).`, evidence: clipping };
+      }
+      return null;
+    }
+  });
+
+  RuleEngine.registerRule({
+    code: "UI-004",
+    category: "layout",
+    severity: "warning",
+    confidence: "high",
+    description: "Text content overflows its own element box (font size / field size mismatch).",
+    remediation: "Feld vergrößern, Schriftgröße reduzieren oder Umbruch/Ellipsis (text-overflow, white-space) erlauben.",
+    evaluate(element, data) {
+      // <input>/<textarea> scrollen ihren Inhalt bei einem langen Wert ganz
+      // normal und ohne sichtbaren Verlust (natives Browserverhalten) —
+      // scrollWidth/Height > clientWidth/Height ist bei diesen Elementen
+      // daher KEIN Fehler, sondern der Normalfall bei jedem etwas längeren
+      // Eintrag. Ein echter Font-Size-vs-Feldhöhe-Mismatch wird stattdessen
+      // von UI-005 (line-height < font-size) abgedeckt.
+      if (['INPUT', 'TEXTAREA'].includes(element.tagName)) return null;
+
+      // Nur Elemente betrachten, die tatsächlich eigenen Textinhalt tragen
+      // (kein reiner Container mit verschachtelten Kindelementen).
+      const hasDirectText = Array.from(element.childNodes).some(n => n.nodeType === Node.TEXT_NODE && n.textContent.trim().length > 0);
+      if (!hasDirectText) return null;
+
+      // overflowX/Y getrennt betrachten (nicht das kombinierte "overflow"-
+      // Shorthand aus data.style) — ein Element mit overflow-y:auto und
+      // overflow-x:hidden ist ein bewusst scrollbarer Container, kein Bug.
+      const computed = window.getComputedStyle(element);
+      const scrollableX = ["auto", "scroll"].includes(computed.overflowX);
+      const scrollableY = ["auto", "scroll"].includes(computed.overflowY);
+
+      const overflowX = element.scrollWidth - element.clientWidth;
+      const overflowY = element.scrollHeight - element.clientHeight;
+      const realOverflowX = overflowX > 1 && !scrollableX;
+      const realOverflowY = overflowY > 1 && !scrollableY;
+
+      if (!realOverflowX && !realOverflowY) return null;
+
+      // Bei sichtbarem Overflow (kein hidden/clip auf der betroffenen Achse)
+      // läuft der Text zwar optisch heraus, ist aber nicht zwingend
+      // "verloren" — trotzdem meldenswert, da es
+      // oft zu überlappendem Text in Foundry-Sheets führt. Schweregrad daher
+      // abhängig davon, ob der Text auf der überlaufenden Achse tatsächlich
+      // abgeschnitten (hidden/clip) wird.
+      const clipsOverflow =
+        (realOverflowX && ["hidden", "clip"].includes(computed.overflowX)) ||
+        (realOverflowY && ["hidden", "clip"].includes(computed.overflowY));
+
+      const computedFontSize = computed.fontSize;
+      return {
+        severity: clipsOverflow ? "error" : "warning",
+        message: clipsOverflow
+          ? `Text in <${data.node.tagName}> wird abgeschnitten — Inhalt (${element.scrollWidth}x${element.scrollHeight}px) größer als sichtbare Box (${element.clientWidth}x${element.clientHeight}px) bei font-size ${computedFontSize}.`
+          : `Text in <${data.node.tagName}> läuft über seine Box hinaus (${overflowX}px horizontal, ${overflowY}px vertikal) bei font-size ${computedFontSize} — kann zu optischer Überlappung führen.`,
+        evidence: { scrollWidth: element.scrollWidth, scrollHeight: element.scrollHeight, clientWidth: element.clientWidth, clientHeight: element.clientHeight, overflowX: computed.overflowX, overflowY: computed.overflowY, fontSize: computedFontSize }
+      };
+    }
+  });
+
+  RuleEngine.registerRule({
+    code: "UI-005",
+    category: "layout",
+    severity: "warning",
+    confidence: "medium",
+    description: "Line-height is smaller than font-size, causing vertically cramped/clipped glyphs.",
+    remediation: "line-height mindestens auf 1.1–1.2x der font-size setzen, insbesondere bei Feldern mit Umlauten oder Unterlängen (g, j, y, ß).",
+    evaluate(element, data) {
+      const hasDirectText = Array.from(element.childNodes).some(n => n.nodeType === Node.TEXT_NODE && n.textContent.trim().length > 0);
+      const isTextField = ['INPUT', 'TEXTAREA', 'LABEL', 'SPAN'].includes(element.tagName);
+      if (!hasDirectText && !isTextField) return null;
+
+      const computed = window.getComputedStyle(element);
+      const fontSizePx = parseFloat(computed.fontSize);
+      const lineHeightRaw = computed.lineHeight;
+
+      // "normal" lässt sich ohne Font-Metriken nicht zuverlässig auswerten — überspringen
+      if (lineHeightRaw === "normal" || !fontSizePx) return null;
+
+      const lineHeightPx = parseFloat(lineHeightRaw);
+      if (!lineHeightPx || isNaN(lineHeightPx)) return null;
+
+      if (lineHeightPx < fontSizePx) {
+        return {
+          message: `<${data.node.tagName}> hat line-height (${lineHeightPx}px) kleiner als font-size (${fontSizePx}px) — Zeichen mit Unterlängen/Umlauten werden wahrscheinlich vertikal abgeschnitten.`,
+          evidence: { fontSizePx, lineHeightPx, ratio: Math.round((lineHeightPx / fontSizePx) * 100) / 100 }
+        };
+      }
+      return null;
+    }
+  });
+
+  // ==========================================================================
+  // 8. TEST RUNNING & SWEEP ORCHESTRATION
+  // ==========================================================================
+
+  class TestRunner {
+    /**
+     * @param {object} options
+     * @param {number} options.delayMs
+     * @param {number} options.settleMs
+     * @param {string} options.safetyPolicy - "safe" | "standard" | "aggressive"
+     * @param {string} options.mode - "light" (nur passiver Scan) |
+     *                                "standard" (Scan + Interaktions-Sweep) |
+     *                                "deep" (Scan + Sweep + Focus-Graph)
+     * @param {boolean} options.dryRun - wenn true, werden keine realen Klicks
+     *   ausgelöst; der Sweep protokolliert nur, welche Elemente betroffen wären.
+     * @param {string[]} options.extraDenyKeywords - zusätzliche, systemspezifische
+     *   Deny-Begriffe für die SafetyPolicyEngine.
+     * @param {string[]} options.ui001IgnoreSelectors - Override für die UI-001-Ausnahmeliste.
+     * @param {boolean} options.captureRuntimeErrors - JS-Fehler während Sweep/Steps
+     *   mitschneiden und dem auslösenden Klick zuordnen (Default: true).
+     * @param {TestCase[]} options.customTestCases
+     */
+    static async runSuite(appOrRef, options = {}) {
+      const {
+        delayMs = 40,
+        settleMs = 100,
+        safetyPolicy = "safe",
+        mode = "standard",
+        dryRun = false,
+        extraDenyKeywords = [],
+        ui001IgnoreSelectors = null,
+        captureRuntimeErrors = true,
+        customTestCases = []
+      } = options;
+
+      if (!dryRun) {
+        console.warn(
+          "%c[UI Auditor] ACHTUNG: Dieser Lauf löst reale Klicks im Sheet aus " +
+          "(Würfe, Dialoge, State-Änderungen möglich). Nur in isolierter " +
+          "Testumgebung ohne verbundene Mitspieler ausführen. " +
+          "Für eine risikofreie Vorschau: { dryRun: true } übergeben.",
+          "color: #ff6644; font-weight: bold;"
+        );
+      }
+
+      // App-Auflösung: appOrRef darf eine fertige App-Instanz, ein Actor-/Item-
+      // Dokument oder ein Name (String) sein. Das fängt den häufigsten
+      // Stolperstein ab: ApplicationV2-Sheets stehen in Foundry v12+ NICHT in
+      // ui.windows (das ist nur die AppV1-Fensterliste) — wer also
+      // `Object.values(ui.windows).find(...)` nutzt, findet AppV2-Sheets nicht
+      // und bekommt ein leeres `app`.
+      const app = await this.resolveApp(appOrRef);
+      if (!app) {
+        throw new Error(
+          `[UI Auditor] Konnte keine App/kein Sheet auflösen für: ${JSON.stringify(String(appOrRef))}. ` +
+          `Prüfe den Actor-/Item-Namen auf Tippfehler, oder übergib direkt eine App-Instanz ` +
+          `(z.B. actor.sheet) bzw. das Actor-/Item-Dokument selbst.`
+        );
+      }
+
+      const rootNode = getNativeElement(app);
+      if (!rootNode) {
+        const diag = {
+          appConstructor: app?.constructor?.name || typeof app,
+          rendered: app?.rendered,
+          hasElement: !!app?.element,
+          elementIsHTMLElement: app?.element instanceof HTMLElement,
+          elementIsJQueryLike: !!(app?.element && app.element[0] instanceof HTMLElement),
+          appId: app?.id || null
+        };
+        throw new Error(
+          "[UI Auditor] Konnte keinen gültigen DOM-Root-Node für die App finden, obwohl eine App-Instanz " +
+          "aufgelöst wurde (auch nach bis zu 3s Warten und einem render(true)-Versuch). " +
+          "Diagnose: " + JSON.stringify(diag) + ". " +
+          "Prüfe: ist app.rendered wirklich true? Existiert app.element? Falls elementIsHTMLElement UND " +
+          "elementIsJQueryLike beide false sind, hat app.element ein unerwartetes Format für diese Foundry-Version. " +
+          "Workaround: Sheet manuell öffnen, kurz warten, dann erneut versuchen, oder direkt das DOM-Element " +
+          "übergeben (z.B. document.querySelector('#" + (app?.id || "SHEET-ID") + "'))."
+        );
+      }
+
+      const scope = AppIdentityManager.getScope(app);
+      const auditRun = new AuditRun(scope, mode, safetyPolicy, dryRun);
+      const previouslyFocused = document.activeElement;
+
+      const errorCapture = captureRuntimeErrors ? new ErrorCapture() : null;
+      if (errorCapture) errorCapture.start();
+
+      try {
+        console.log(`[TestRunner v0.10.0] Initiating Suite [${auditRun.id}] for Scope: ${scope} (mode=${mode}, dryRun=${dryRun})`);
+
+        // Phase 1: Declarative Custom Test Cases (läuft in jedem Modus)
+        for (const tc of customTestCases) {
+          auditRun.addTestCase(tc);
+          await tc.run(rootNode, auditRun, { dryRun, errorCapture });
+        }
+
+        // Phasen 2-4: Passiver Scan, AppV2-Checks, Interaktions-Sweep und
+        // Focus-Graph — jetzt pro erkanntem Tab wiederholt, statt nur einmal
+        // für den gerade aktiven Tab. Ergebnis landet zusätzlich in
+        // auditRun.coverage, damit der Report zeigt, was tatsächlich
+        // geprüft wurde statt "0 Findings" mit unvollständiger Abdeckung
+        // zu verwechseln.
+        await this.auditAllTabs(app, rootNode, auditRun, {
+          mode, dryRun, safetyPolicy, extraDenyKeywords, delayMs, settleMs, errorCapture, ui001IgnoreSelectors
+        });
+
+        auditRun.finish();
+        console.log(`[TestRunner] Suite Completed Successfully [${auditRun.id}]. Total Findings: ${auditRun.findings.length}`);
+      } catch (err) {
+        console.error("[TestRunner] Suite execution crashed:", err);
+        auditRun.fail(err);
+      } finally {
+        if (errorCapture) errorCapture.stop();
+        // Nutzerfokus wiederherstellen, falls Phase 4 (oder etwas anderes) ihn verschoben hat
+        if (previouslyFocused && document.contains(previouslyFocused) && document.activeElement !== previouslyFocused) {
+          try { previouslyFocused.focus(); } catch (e) {}
+        }
+      }
+
+      return auditRun;
+    }
+
+    /**
+     * Löst appOrRef in eine tatsächliche App-Instanz auf. Erlaubt:
+     *  - Eine bereits fertige App-Instanz (App1 oder App2) → wird 1:1 durchgereicht.
+     *  - Ein Actor-/Item-Dokument → nutzt document.sheet.
+     *  - Ein Name (String) → sucht zuerst unter Actors/Items nach exaktem
+     *    Namen, dann in ui.windows (AppV1) und foundry.applications.instances
+     *    (AppV2) nach einem passenden Fenstertitel.
+     * Ist die gefundene App noch nicht gerendert, wird sie automatisch
+     * gerendert und kurz gewartet, bis der DOM-Knoten existiert — das erspart
+     * den manuellen `await app.render(true)`-Schritt.
+     */
+    static async resolveApp(appOrRef) {
+      let app = null;
+
+      if (appOrRef instanceof HTMLElement) {
+        return appOrRef; // Sonderfall: direkt ein DOM-Element übergeben
+      }
+
+      if (typeof appOrRef === "string") {
+        const actor = (typeof game !== "undefined" && game.actors?.getName) ? game.actors.getName(appOrRef) : null;
+        const item = (!actor && typeof game !== "undefined" && game.items?.getName) ? game.items.getName(appOrRef) : null;
+        app = actor?.sheet || item?.sheet || null;
+
+        if (!app) {
+          const v1Match = Object.values((typeof ui !== "undefined" && ui.windows) || {})
+            .find(w => w.title === appOrRef || w.actor?.name === appOrRef || w.item?.name === appOrRef);
+          if (v1Match) app = v1Match;
+        }
+        if (!app) {
+          const v2Registry = (typeof foundry !== "undefined" && foundry.applications?.instances) || null;
+          if (v2Registry && typeof v2Registry.values === "function") {
+            const v2Match = Array.from(v2Registry.values())
+              .find(w => w.title === appOrRef || w.actor?.name === appOrRef || w.item?.name === appOrRef || w.document?.name === appOrRef);
+            if (v2Match) app = v2Match;
+          }
+        }
+      } else if (appOrRef && typeof appOrRef.documentName === "string" && appOrRef.sheet) {
+        // Ein Actor-/Item-/... Dokument wurde direkt übergeben
+        app = appOrRef.sheet;
+      } else {
+        // Bereits eine App-Instanz (oder etwas, das wir nicht weiter auflösen können)
+        app = appOrRef || null;
+      }
+
+      if (!app) return null;
+
+      // Bereits vollständig da? Dann nichts weiter zu tun.
+      if (getNativeElement(app)) return app;
+
+      // Rendern (falls möglich) und danach aktiv auf den DOM-Knoten warten,
+      // statt nur einmal fest zu schlafen — große Sheets (viele Items/Tabs)
+      // können länger als 150ms brauchen, bis app.element tatsächlich steht.
+      if (typeof app.render === "function") {
+        try {
+          await app.render(true);
+        } catch (e) {
+          console.warn("[UI Auditor] app.render(true) hat eine Exception geworfen:", e);
+        }
+      }
+
+      const pollStart = Date.now();
+      const pollTimeoutMs = 3000;
+      while (Date.now() - pollStart < pollTimeoutMs) {
+        if (getNativeElement(app)) return app;
+        await new Promise(res => setTimeout(res, 50));
+      }
+
+      return app; // Aufrufer prüft getNativeElement erneut und meldet ggf. mit Diagnosedaten
+    }
+
+    /**
+     * AppV2-spezifisch: gleicht alle [data-action]-Attribute im gerenderten DOM
+     * gegen die Action-Registry der App (app.options.actions bzw.
+     * DEFAULT_OPTIONS.actions) ab.
+     *  - UI-ACTION-ORPHANED: data-action im DOM ohne registrierten Handler.
+     *    Der Klick würde vermutlich (vorbehaltlich Custom-Listener außerhalb
+     *    des AppV2-Action-Patterns) nichts auslösen.
+     *  - UI-ACTION-UNUSED: registrierte Action ohne passendes Element im
+     *    aktuell gerenderten DOM. Niedrige Konfidenz/Info, da die Action in
+     *    einem anderen Tab/Partial liegen oder bewusst nur programmatisch
+     *    ausgelöst werden kann.
+     * Läuft rein statisch, ohne Interaktion — daher in jedem mode aktiv.
+     */
+    /**
+     * Ermittelt Tab-Gruppen rein aus dem DOM (keine Abhängigkeit von
+     * app.constructor.TABS/app.options.tabs, die je nach Foundry-Version und
+     * System unterschiedlich strukturiert sein können). Nutzt die
+     * Foundry-Konvention `nav[data-group] [data-tab]` für Tab-Navigation.
+     * Liefert z.B.: [{ group: "primary", tabs: [{id:"description", label:"Beschreibung"}, ...] }]
+     */
+    static detectTabs(rootNode) {
+      const groups = [];
+      const navCandidates = Array.from(rootNode.querySelectorAll('nav[data-group]'));
+
+      for (const nav of navCandidates) {
+        const group = nav.getAttribute('data-group');
+        if (!group) continue;
+
+        const tabEls = Array.from(nav.querySelectorAll('[data-tab]'));
+        const tabs = tabEls
+          .map(t => ({
+            id: t.getAttribute('data-tab'),
+            label: (t.getAttribute('data-tooltip') || t.getAttribute('aria-label') || t.textContent || t.getAttribute('data-tab') || '').trim() || t.getAttribute('data-tab')
+          }))
+          .filter(t => t.id);
+
+        if (tabs.length > 0) groups.push({ group, tabs });
+      }
+
+      return groups;
+    }
+
+    /**
+     * Aktiviert einen Tab. Bevorzugt die offizielle AppV2-API
+     * (app.changeTab), fällt bei deren Fehlen/Fehlschlag auf einen
+     * simulierten Klick auf das Nav-Element zurück. Verifiziert im Anschluss
+     * best-effort, ob das zugehörige Content-Panel tatsächlich eine
+     * Layout-Box hat (echte Aktivierung), statt dem Klick blind zu vertrauen.
+     */
+    static async activateTab(app, rootNode, group, tabId, delayMs) {
+      let triggered = false;
+
+      if (typeof app?.changeTab === "function") {
+        try {
+          app.changeTab(tabId, group, { updatePosition: false });
+          triggered = true;
+        } catch (e) { /* fällt durch zum DOM-Klick-Fallback */ }
+      }
+
+      if (!triggered) {
+        const navEl = rootNode.querySelector(`[data-tab="${safeCSSEscape(tabId)}"][data-group="${safeCSSEscape(group)}"]`);
+        if (navEl instanceof HTMLElement) {
+          navEl.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+          triggered = true;
+        }
+      }
+
+      if (!triggered) return false;
+
+      await new Promise(res => setTimeout(res, delayMs));
+
+      // Best-effort-Verifikation: existiert ein zugehöriges Content-Panel
+      // (außerhalb der Nav selbst) und hat es jetzt eine Layout-Box?
+      const contentPanels = Array.from(
+        rootNode.querySelectorAll(`[data-tab="${safeCSSEscape(tabId)}"][data-group="${safeCSSEscape(group)}"]`)
+      ).filter(el => !el.closest('nav'));
+
+      if (contentPanels.length === 0) return true; // nicht verifizierbar — Klick/API-Call wurde ausgeführt
+      return contentPanels.some(el => hasLayoutBox(el));
+    }
+
+    /**
+     * Entfernt aus auditRun.findings ab startIndex exakte Duplikate
+     * (gleicher code + CSS-Pfad + message), die entstehen, wenn dauerhaft
+     * sichtbare Chrome-Elemente (z.B. der Header) bei jedem Tab-Durchlauf
+     * erneut gescannt werden. Entfernt NUR exakte Wiederholungen desselben
+     * Elements — unterschiedliche Elemente mit ähnlichem Pfad bleiben
+     * erhalten, da hier wirklich derselbe Knoten erneut geprüft wurde.
+     */
+    static dedupeNewFindings(auditRun, seenFingerprints, startIndex) {
+      const kept = [];
+      for (let i = startIndex; i < auditRun.findings.length; i++) {
+        const f = auditRun.findings[i];
+        const fingerprint = `${f.code}|${f.node?.path || ''}|${f.message}`;
+        if (seenFingerprints.has(fingerprint)) continue;
+        seenFingerprints.add(fingerprint);
+        kept.push(f);
+      }
+      auditRun.findings.length = startIndex;
+      auditRun.findings.push(...kept);
+    }
+
+    /**
+     * Orchestriert Phasen 2-4 (Scan, AppV2-Checks, Sweep, Focus-Graph) über
+     * ALLE erkannten Tabs hinweg statt nur über den aktuell aktiven Tab.
+     * Schreibt eine Coverage-Zusammenfassung nach auditRun.coverage, damit
+     * der Report zeigt, was tatsächlich geprüft wurde — "0 Findings" soll
+     * nicht mit "alles wurde geprüft und ist okay" verwechselbar sein.
+     */
+    static async auditAllTabs(app, rootNode, auditRun, options) {
+      const { mode, dryRun, safetyPolicy, extraDenyKeywords, delayMs, settleMs, errorCapture, ui001IgnoreSelectors } = options;
+      const tabActivationDelayMs = Math.max(settleMs, 80);
+      const seenFingerprints = new Set();
+      const coverage = { groups: [] };
+
+      const runPhasesForCurrentState = async () => {
+        this.scanDOM(app, rootNode, auditRun, { ui001IgnoreSelectors });
+        this.validateActionMapping(app, rootNode, auditRun);
+        this.validateDataModelBindings(app, rootNode, auditRun);
+
+        if (mode === "standard" || mode === "deep") {
+          await this.sweepInteractiveElements(app, rootNode, auditRun, {
+            delayMs, settleMs, safetyPolicy, dryRun, extraDenyKeywords, errorCapture
+          });
+        }
+        if (mode === "deep") {
+          await this.runFocusGraphTraversal(app, rootNode, auditRun, { delayMs });
+        }
+      };
+
+      const tabGroups = this.detectTabs(rootNode);
+
+      if (tabGroups.length === 0) {
+        // Keine Tab-Struktur erkannt — normaler Einzel-Durchlauf wie bisher
+        await runPhasesForCurrentState();
+        coverage.groups.push({ group: null, tabsTotal: 0, tabsScanned: 0, tabsUnreachable: [] });
+        auditRun.coverage = coverage;
+        return;
+      }
+
+      for (const { group, tabs } of tabGroups) {
+        const groupCoverage = { group, tabsTotal: tabs.length, tabsScanned: 0, tabsUnreachable: [] };
+
+        for (const tab of tabs) {
+          const activated = await this.activateTab(app, rootNode, group, tab.id, tabActivationDelayMs);
+
+          if (!activated) {
+            groupCoverage.tabsUnreachable.push(tab.id);
+            auditRun.addFinding({
+              code: "UI-TAB-UNREACHABLE",
+              category: "coverage",
+              severity: "warning",
+              confidence: "medium",
+              message: `Tab "${tab.label}" (Gruppe "${group}") konnte nicht aktiviert werden — Inhalt wurde NICHT geprüft.`,
+              remediation: "Manuell auf diesen Tab wechseln und den Auditor erneut laufen lassen.",
+              evidence: { group, tabId: tab.id }
+            });
+            continue;
+          }
+
+          const startIdx = auditRun.findings.length;
+          await runPhasesForCurrentState();
+          this.dedupeNewFindings(auditRun, seenFingerprints, startIdx);
+          groupCoverage.tabsScanned++;
+        }
+
+        coverage.groups.push(groupCoverage);
+      }
+
+      auditRun.coverage = coverage;
+    }
+
+    static validateActionMapping(app, rootNode, auditRun) {
+      const actionsMap = app?.options?.actions || app?.constructor?.DEFAULT_OPTIONS?.actions || null;
+      if (!actionsMap || typeof actionsMap !== "object") {
+        // Keine Action-Registry auffindbar — vermutlich kein AppV2-Actions-Pattern
+        // (z.B. legacy AppV1 oder rein Listener-basierte App). Check überspringen.
+        return;
+      }
+
+      const registeredActionNames = Object.keys(actionsMap);
+      const matchedActionNames = new Set();
+      const actionEls = Array.from(rootNode.querySelectorAll('[data-action]'));
+
+      for (const el of actionEls) {
+        const raw = el.getAttribute('data-action') || '';
+        const names = raw.split(/\s+/).filter(Boolean);
+        for (const actionName of names) {
+          if (registeredActionNames.includes(actionName)) {
+            matchedActionNames.add(actionName);
+          } else {
+            auditRun.addFinding({
+              code: "UI-ACTION-ORPHANED",
+              category: "functional",
+              severity: "error",
+              confidence: "high",
+              message: `<${el.tagName.toLowerCase()}> referenziert data-action="${actionName}", das in der Action-Registry der App nicht registriert ist — Klick würde vermutlich nichts auslösen.`,
+              remediation: "Action-Namen in static DEFAULT_OPTIONS.actions registrieren oder data-action im Template korrigieren (Tippfehler/veralteter Name?).",
+              evidence: { actionName, registeredActions: registeredActionNames },
+              node: UIInspector.inspect(el).node
+            });
+          }
+        }
+      }
+
+      for (const actionName of registeredActionNames) {
+        if (!matchedActionNames.has(actionName)) {
+          auditRun.addFinding({
+            code: "UI-ACTION-UNUSED",
+            category: "functional",
+            severity: "info",
+            confidence: "low",
+            message: `Registrierte Action "${actionName}" hat im aktuell gerenderten DOM kein passendes [data-action]-Element.`,
+            remediation: "Kann an anderer Stelle (anderer Tab/Partial, kontextabhängiges Rendering) verwendet werden oder ungenutzt sein — vor dem Entfernen prüfen.",
+            evidence: { actionName }
+          });
+        }
+      }
+    }
+
+    /**
+     * AppV2-spezifisch: gleicht die name-Attribute aller Formularfelder gegen
+     * das DataModel-Schema des zugrundeliegenden Dokuments ab (document.schema
+     * bzw. document.system.schema). Meldet nur eindeutig aufgelöste, fehlende
+     * SchemaField-Pfade als UI-BINDING-ORPHANED. Bei Arrays, ObjectFields,
+     * TypedObjectFields oder fehlendem Schema wird die Prüfung für diesen
+     * Pfad bewusst übersprungen (inconclusive), um False Positives auf
+     * dynamischen Strukturen zu vermeiden — die Prüfung ist damit konservativ
+     * (kann Fehler übersehen, meldet aber keine falschen Treffer).
+     */
+    static validateDataModelBindings(app, rootNode, auditRun) {
+      const doc = app?.document || app?.object || app?.actor || app?.item || null;
+      if (!doc || !doc.schema) return; // kein Document/Schema auflösbar — z.B. reine Config-/Settings-App
+
+      const formEls = Array.from(rootNode.querySelectorAll('input[name], select[name], textarea[name]'));
+      const seenPaths = new Set();
+
+      for (const el of formEls) {
+        const name = el.getAttribute('name');
+        if (!name || seenPaths.has(name)) continue;
+        seenPaths.add(name);
+
+        if (name.startsWith('flags.')) continue; // Flags sind bewusst schemafrei
+        if (name.includes('[')) continue; // Bracket-/Index-Notation nicht statisch prüfbar
+
+        let rootField, parts;
+        if (name.startsWith('system.')) {
+          rootField = doc.system?.schema || null;
+          parts = name.split('.').slice(1);
+          if (!rootField) continue; // System nutzt evtl. kein DataModel — überspringen
+        } else {
+          rootField = doc.schema;
+          parts = name.split('.');
+        }
+
+        // Direkte Live-Prüfung gegen das TATSÄCHLICH geladene Schema für den
+        // häufigsten Fall (einstufiger Pfad wie "name" oder "currentCover").
+        // Ersetzt eine zuvor hartkodierte Liste bekannter Basis-Felder
+        // ("name", "img", ...) — funktioniert dadurch automatisch auch für
+        // system-eigene Top-Level-Felder und bleibt über Foundry-Versionen
+        // hinweg korrekt, ohne dass diese Liste gepflegt werden müsste.
+        if (parts.length === 1 && rootField?.fields && Object.hasOwn(rootField.fields, parts[0])) {
+          continue;
+        }
+
+        const result = this._resolveSchemaField(rootField, parts);
+        if (result.status === "missing") {
+          auditRun.addFinding({
+            code: "UI-BINDING-ORPHANED",
+            category: "data-integrity",
+            severity: "warning",
+            confidence: "medium",
+            message: `Formularfeld <${el.tagName.toLowerCase()} name="${name}"> referenziert einen Pfad ("${result.missingAt}"), der im DataModel-Schema von ${doc.documentName || "Document"} nicht existiert.`,
+            remediation: "Feldnamen im Template mit dem aktuellen Schema abgleichen — häufig nach Systemupdate/Schema-Migration verwaist.",
+            evidence: {
+              name,
+              missingAt: result.missingAt,
+              documentType: doc.documentName || null,
+              systemId: (typeof game !== "undefined" && game.system?.id) || null
+            },
+            node: UIInspector.inspect(el).node
+          });
+        }
+        // "found" und "inconclusive" werden bewusst nicht gemeldet.
+      }
+    }
+
+    /**
+     * Läuft einen Pfad (z.B. ["attributes","hp","value"]) gegen ein
+     * Foundry-DataModel-Schema-Feld. Gibt zurück:
+     *  - { status: "found", field }  — Pfad eindeutig aufgelöst
+     *  - { status: "missing", missingAt }  — Pfad-Segment existiert
+     *    nachweislich nicht in einem SchemaField
+     *  - { status: "inconclusive" }  — Struktur nicht statisch prüfbar
+     *    (Array/Object-artige Felder) oder Schema unvollständig; wird
+     *    absichtlich NICHT als Fehler gewertet.
+     */
+    static _resolveSchemaField(rootField, parts) {
+      let current = rootField;
+      let i = 0;
+      let guard = 0;
+
+      while (i < parts.length) {
+        guard++;
+        if (guard > 50) return { status: "inconclusive" }; // Sicherheitsnetz gegen Endlosschleifen
+        if (!current) return { status: "inconclusive" };
+
+        const clsName = current.constructor?.name || "";
+
+        // Verschachtelte DataModels ohne Pfadsegment zu verbrauchen auflösen
+        if (clsName === "EmbeddedDataField" && current.model?.schema) {
+          current = current.model.schema;
+          continue;
+        }
+
+        if (clsName === "SchemaField" && current.fields) {
+          const key = parts[i];
+          const next = current.fields[key];
+          if (next === undefined) {
+            return { status: "missing", missingAt: parts.slice(0, i + 1).join(".") };
+          }
+          current = next;
+          i++;
+          continue;
+        }
+
+        if (["ArrayField", "SetField", "ObjectField", "TypedObjectField"].includes(clsName)) {
+          // Dynamische, nicht statisch prüfbare Struktur — sicherheitshalber nicht melden
+          return { status: "inconclusive" };
+        }
+
+        // Primitives Leaf-Field (NumberField, StringField, BooleanField, ...),
+        // aber der Pfad geht noch weiter — kann nicht sinnvoll aufgelöst werden
+        return { status: "missing", missingAt: parts.slice(0, i + 1).join(".") };
+      }
+
+      return { status: "found", field: current };
+    }
+
+    static scanDOM(app, rootNode, auditRun, { ui001IgnoreSelectors = null } = {}) {
+      const appScope = AppIdentityManager.getScope(app);
+      const elements = [rootNode, ...Array.from(rootNode.querySelectorAll('*'))];
+      const ruleOptions = ui001IgnoreSelectors ? { ui001IgnoreSelectors } : {};
+
+      elements.forEach(el => {
+        if (!(el instanceof HTMLElement)) return;
+        // hasLayoutBox erfasst auch den Fall, dass ein VORFAHRE (z.B. ein
+        // inaktiver Tab-Container) display:none hat — reines
+        // getComputedStyle(el).display prüft nur das Element selbst, da
+        // display sich nicht vererbt, und übersieht diesen häufigen Fall.
+        if (!hasLayoutBox(el)) return;
+        const style = window.getComputedStyle(el);
+        if (style.visibility === "hidden") return;
+
+        const inspectionData = UIInspector.inspect(el, { trigger: "scan", appScope });
+        const findings = RuleEngine.evaluateElement(el, inspectionData, ruleOptions);
+        findings.forEach(f => auditRun.addFinding(f));
+      });
+    }
+
+    static async sweepInteractiveElements(app, rootNode, auditRun, options) {
+      const { delayMs, settleMs, safetyPolicy, dryRun, extraDenyKeywords, errorCapture } = options;
+      const targets = Array.from(rootNode.querySelectorAll('button, a, [role="button"], [data-action]'));
+
+      for (const target of targets) {
+        if (!(target instanceof HTMLElement) || target.disabled || target.getAttribute("aria-disabled") === "true") continue;
+
+        // Element ohne Layout-Box (z.B. in einem gerade inaktiven Tab) still
+        // überspringen statt es als "obstructed" zu melden — es ist schlicht
+        // noch nicht getestet worden, nicht kaputt. Diese Elemente werden
+        // erreicht, sobald ihr Tab aktiv ist (separater Lauf/Tab-Wechsel nötig,
+        // ein einzelner Sweep sieht nur den aktuell sichtbaren Tab).
+        if (!hasLayoutBox(target)) continue;
+
+        // FVTT System Exclusions
+        if (target.closest('nav.tabs') || target.classList.contains('tab') || target.hasAttribute('data-tab')) continue;
+        if (target.classList.contains('editor-edit') || target.getAttribute('data-action') === 'edit' || target.hasAttribute('data-edit') || target.closest('.editor-content')) continue;
+
+        // Policy Filter Evaluation
+        const policyEval = SafetyPolicyEngine.evaluate(target, safetyPolicy, extraDenyKeywords);
+        if (!policyEval.allowed) {
+          auditRun.addFinding({
+            code: "UI-SAFETY-POLICY-SKIPPED",
+            category: "safety",
+            severity: "info",
+            confidence: "high",
+            message: `Skipped interaction with <${target.tagName.toLowerCase()}> due to SafetyPolicy [${safetyPolicy}] (matched: "${policyEval.matchedKeyword}").`,
+            evidence: policyEval,
+            node: UIInspector.inspect(target).node
+          });
+          continue;
+        }
+
+        // Multi-Point Hit Testing
+        const hitTest = AdvancedGeometryEngine.isHittableMultiPoint(target);
+        if (!hitTest.isHittable) {
+          auditRun.addFinding({
+            code: "UI-TARGET-OBSTRUCTED",
+            category: "usability",
+            severity: "warning",
+            confidence: hitTest.obstruction ? "high" : "medium",
+            message: `Target <${target.tagName.toLowerCase()}> is obstructed across multi-point hit testing (Coverage: ${Math.round(hitTest.hitCoverage * 100)}%).`,
+            remediation: "Inspect z-index overlays or bounding containers covering this target.",
+            evidence: hitTest,
+            node: UIInspector.inspect(target).node
+          });
+          continue;
+        }
+
+        if (dryRun) {
+          // Kein realer Klick: nur protokollieren, dass dieses Ziel im
+          // scharfen Lauf geklickt würde und die Policy-Prüfung passiert hat.
+          auditRun.addFinding({
+            code: "UI-DRYRUN-WOULD-CLICK",
+            category: "safety",
+            severity: "info",
+            confidence: "high",
+            message: `[Dry-Run] <${target.tagName.toLowerCase()}> würde geklickt werden (Policy-Check bestanden, Coverage: ${Math.round(hitTest.hitCoverage * 100)}%).`,
+            evidence: { hitCoverage: hitTest.hitCoverage },
+            node: UIInspector.inspect(target).node
+          });
+          continue;
+        }
+
+        // Mutation Observation
+        let hasDOMMutation = false;
+        const observer = new MutationObserver(() => { hasDOMMutation = true; });
+        observer.observe(rootNode, { childList: true, attributes: true, subtree: true });
+
+        const errorStartIdx = errorCapture ? errorCapture.length : 0;
+
+        try {
+          target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+        } catch (e) {}
+
+        await new Promise(res => setTimeout(res, delayMs + settleMs));
+        observer.disconnect();
+
+        // JS-Fehler, die dieser Klick ausgelöst hat, statt sie verschwinden
+        // zu lassen dem Ziel zuordnen (window.onerror, unhandledrejection,
+        // console.error — siehe ErrorCapture).
+        if (errorCapture) {
+          const newErrors = errorCapture.sinceIndex(errorStartIdx);
+          if (newErrors.length > 0) {
+            auditRun.addFinding({
+              code: "UI-RUNTIME-ERROR",
+              category: "functional",
+              severity: "error",
+              confidence: "high",
+              message: `Klick auf <${target.tagName.toLowerCase()}> hat ${newErrors.length} JS-Fehler ausgelöst: ${newErrors[0].message}`,
+              remediation: "Stacktrace in evidence.errors prüfen; ggf. Try/Catch oder Null-Checks im Action-Handler ergänzen.",
+              evidence: { errors: newErrors },
+              node: UIInspector.inspect(target).node
+            });
+          }
+        }
+
+        if (!hasDOMMutation) {
+          auditRun.addFinding({
+            code: "UI-NO-DOM-MUTATION",
+            category: "usability",
+            severity: "info",
+            confidence: "low",
+            message: `Clicking <${target.tagName.toLowerCase()}> produced no observable DOM mutation in settle window (${delayMs + settleMs}ms). Bei entfernten/gehosteten Welten ggf. settleMs erhöhen, da Updates über den Server-Roundtrip laufen.`,
+            evidence: { hitCoverage: hitTest.hitCoverage, settleWindowMs: delayMs + settleMs },
+            node: UIInspector.inspect(target).node
+          });
+        }
+      }
+    }
+
+    static async runFocusGraphTraversal(app, rootNode, auditRun, options) {
+      const graph = new FocusGraph();
+      const focusables = Array.from(
+        rootNode.querySelectorAll('button, a, input, select, textarea, [tabindex]:not([tabindex="-1"])')
+      ).filter(el => !el.disabled && hasLayoutBox(el) && window.getComputedStyle(el).visibility !== "hidden");
+
+      let prevKey = null;
+      let unreachableCount = 0;
+
+      for (const el of focusables) {
+        const currentKey = graph.addNode(el);
+        el.focus();
+        await new Promise(res => setTimeout(res, options.delayMs || 30));
+
+        const actualFocused = document.activeElement;
+
+        // Fokus ließ sich nicht auf das Zielelement setzen (z.B. trotz
+        // sichtbarer Layout-Box aus anderem Grund nicht wirklich fokussierbar).
+        // NICHT als Graph-Kante aufnehmen — sonst kollabiert activeElement auf
+        // document.body und erzeugt bei mehreren Fehlschlägen hintereinander
+        // eine Kaskade aus falsch erkannten "Focus-Trap"-Funden.
+        if (actualFocused !== el) {
+          unreachableCount++;
+          continue;
+        }
+
+        const actualKey = graph.addNode(actualFocused);
+        if (prevKey && actualKey) {
+          graph.addEdge(prevKey, actualKey, "tab");
+        }
+        prevKey = actualKey || currentKey;
+      }
+
+      if (unreachableCount > 0) {
+        auditRun.addFinding({
+          code: "UI-FOCUS-UNREACHABLE",
+          category: "accessibility",
+          severity: "info",
+          confidence: "medium",
+          message: `${unreachableCount} von ${focusables.length} fokussierbaren Elementen ließen sich trotz Layout-Box nicht per .focus() erreichen (z.B. weil sie doch in einem nicht aktiven Bereich lagen).`,
+          evidence: { unreachableCount, totalFocusables: focusables.length }
+        });
+      }
+
+      graph.analyzePatterns(auditRun);
+      auditRun.focusGraph = graph;
+    }
+  }
+
+  // ==========================================================================
+  // 9. REPORT GENERATION ENGINE
+  // ==========================================================================
+
+  class AuditReporter {
+    static generateReport(options = {}) {
+      const { runId = null, format = "markdown" } = options;
+      const auditRun = runId ? FindingStore.getRun(runId) : Array.from(FindingStore.completedRuns.values()).pop();
+
+      if (!auditRun) {
+        return `> ⚠️ **No completed AuditRun found for ID [${runId || "latest"}].**`;
+      }
+
+      if (format === "json") {
+        return JSON.stringify(auditRun, null, 2);
+      }
+
+      const findings = auditRun.findings;
+      const counts = { error: 0, warning: 0, info: 0 };
+      findings.forEach(f => { counts[f.severity] = (counts[f.severity] || 0) + 1; });
+
+      let md = `# Foundry VTT UI Audit & Automation Report (v0.10.0)\n\n`;
+      md += `| Metadata | Details |\n|---|---|\n`;
+      md += `| **Run ID** | \`${auditRun.id}\` |\n`;
+      md += `| **Status** | \`${auditRun.status.toUpperCase()}\` |\n`;
+      md += `| **Mode** | \`${auditRun.mode}\` |\n`;
+      md += `| **Dry-Run** | \`${auditRun.dryRun}\` |\n`;
+      md += `| **Scope** | \`${auditRun.scope}\` |\n`;
+      md += `| **Duration** | \`${auditRun.durationMs}ms\` |\n`;
+      md += `| **Safety Policy** | \`${auditRun.safetyPolicy}\` |\n`;
+      md += `| **Total Findings** | 🔴 \`${counts.error}\` &nbsp; 🟠 \`${counts.warning}\` &nbsp; 🔵 \`${counts.info}\` |\n\n---\n\n`;
+
+      const coverageGroups = (auditRun.coverage?.groups || []).filter(g => g.group !== null);
+      if (coverageGroups.length > 0) {
+        const totalTabs = coverageGroups.reduce((sum, g) => sum + g.tabsTotal, 0);
+        const scannedTabs = coverageGroups.reduce((sum, g) => sum + g.tabsScanned, 0);
+        md += `## Tab-Abdeckung (${scannedTabs}/${totalTabs} Tabs geprüft)\n\n`;
+        md += `| Tab-Gruppe | Tabs gesamt | Geprüft | Nicht erreichbar |\n|---|---|---|---|\n`;
+        coverageGroups.forEach(g => {
+          const unreachable = g.tabsUnreachable.length ? `⚠️ ${g.tabsUnreachable.join(', ')}` : '–';
+          md += `| \`${g.group}\` | ${g.tabsTotal} | ${g.tabsScanned} | ${unreachable} |\n`;
+        });
+        md += `\n---\n\n`;
+      }
+
+      if (auditRun.testCases.length > 0) {
+        md += `## Declarative Test Suite Results (${auditRun.testCases.length} Tests)\n\n`;
+        auditRun.testCases.forEach(tc => {
+          const icon = tc.status === "passed" ? "✅" : "❌";
+          md += `### ${icon} Test: ${tc.name} [${tc.status.toUpperCase()}]\n`;
+          tc.steps.forEach((s, idx) => {
+            const stepIcon = s.status === "passed" ? "✓" : "✗";
+            md += `- **Step ${idx + 1}:** [${stepIcon}] \`${s.action}\` on \`${JSON.stringify(s.targetLocator)}\``;
+            if (s.error) md += ` — *Error:* \`${s.error}\``;
+            md += `\n`;
+          });
+          md += `\n`;
+        });
+        md += `---\n\n`;
+      }
+
+      md += `## UI Findings Summary (${findings.length} Issues Detected)\n\n`;
+      if (findings.length === 0) {
+        const coverageGroupsForEmpty = (auditRun.coverage?.groups || []).filter(g => g.group !== null);
+        if (coverageGroupsForEmpty.length > 0) {
+          const totalTabs = coverageGroupsForEmpty.reduce((sum, g) => sum + g.tabsTotal, 0);
+          const scannedTabs = coverageGroupsForEmpty.reduce((sum, g) => sum + g.tabsScanned, 0);
+          md += `> ✅ **Keine Funde im geprüften Bereich.** Abdeckung: ${scannedTabs}/${totalTabs} Tabs geprüft — siehe Tab-Abdeckungs-Tabelle oben, falls Tabs nicht erreichbar waren.\n`;
+        } else {
+          md += `> ✅ **Keine Funde im geprüften Bereich.** (Keine Tab-Struktur erkannt — es wurde nur der aktuell gerenderte Zustand geprüft.)\n`;
+        }
+        return md;
+      }
+
+      findings.forEach((f, idx) => {
+        const icon = f.severity === "error" ? "🔴" : f.severity === "warning" ? "🟠" : "🔵";
+        md += `### ${idx + 1}. ${icon} [${f.code}] ${f.message}\n\n`;
+        md += `- **Category:** \`${f.category}\` | **Confidence:** \`${f.confidence}\`\n`;
+        md += `- **CSS Path:** \`${f.node?.path || "N/A"}\`\n`;
+        if (f.remediation) md += `- **Remediation:** ${f.remediation}\n`;
+        md += `\n`;
+      });
+
+      return md;
+    }
+  }
+
+  // ==========================================================================
+  // GLOBAL EXPORTS
+  // ==========================================================================
+
+  globalThis.AuditRun = AuditRun;
+  globalThis.ErrorCapture = ErrorCapture;
+  globalThis.FindingStore = FindingStore;
+  globalThis.AppIdentityManager = AppIdentityManager;
+  globalThis.ElementLocatorEngine = ElementLocatorEngine;
+  globalThis.SafetyPolicyEngine = SafetyPolicyEngine;
+  globalThis.AdvancedGeometryEngine = AdvancedGeometryEngine;
+  globalThis.FocusGraph = FocusGraph;
+  globalThis.AssertionEngine = AssertionEngine;
+  globalThis.TestStep = TestStep;
+  globalThis.TestCase = TestCase;
+  globalThis.UIInspector = UIInspector;
+  globalThis.RuleEngine = RuleEngine;
+  globalThis.TestRunner = TestRunner;
+  globalThis.AuditReporter = AuditReporter;
+
+  console.log("%c[UI Auditor v0.10.0] Tab-Discovery + Coverage-Reporting aktiv! (auditiert jetzt alle Tabs statt nur den aktiven)", "color: #00ffaa; font-weight: bold;");
+})();
