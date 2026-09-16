@@ -1,0 +1,161 @@
+const targets=[...game.user.targets];
+
+if(targets.length!==1){
+    ui.notifications.warn("Bitte genau einen Zielcharakter auswählen.");
+    return;
+}
+
+const targetActor=targets[0].actor;
+
+if(!targetActor){
+    ui.notifications.error("Ziel besitzt keinen Charakter.");
+    return;
+}
+
+// Nur Story Characters verarbeiten
+if(targetActor.type !== "spc"){
+    ui.notifications.warn("Das Ziel ist kein Story Character.");
+    return;
+}
+
+
+// Letzten Wurf finden
+const lastMessage=[...game.messages.contents]
+    .reverse()
+    .find(m=>m.rolls?.length && m.speaker?.actor);
+
+if(!lastMessage){
+    ui.notifications.error("Kein vorheriger Wurf gefunden.");
+    return;
+}
+
+
+// Angreifer bestimmen
+const ownActor=game.actors.get(lastMessage.speaker.actor);
+
+if(!ownActor){
+    ui.notifications.error("Der würfelnde Charakter konnte nicht gefunden werden.");
+    return;
+}
+
+
+// Wurfergebnis holen
+const roll=lastMessage.rolls[0];
+
+let successes=Number(roll.total);
+
+
+// Aktive Modifikatoren berücksichtigen
+for(const modifier of roll.options.activeModifiers ?? []){
+    const value=parseInt(modifier.value);
+
+    if(!Number.isNaN(value)){
+        successes+=value;
+    }
+}
+
+
+// Zielwert automatisch berechnen
+const physicalPool=targetActor.system.standarddicepools?.physical?.value;
+
+if(typeof physicalPool !== "number"){
+    ui.notifications.error("Kein physischer Standardwürfelpool gefunden.");
+    return;
+}
+
+const targetValue=Math.floor(physicalPool / 2);
+
+
+// Schaden anwenden
+async function applySuperficialDamage(actor,amount){
+
+    if(amount<=0)return;
+
+    const health=foundry.utils.duplicate(actor.system.health);
+
+    let remaining=amount;
+
+    while(remaining>0){
+
+        if(health.superficial < health.max){
+            health.superficial++;
+        }
+        else{
+            health.superficial--;
+            health.aggravated++;
+        }
+
+        remaining--;
+    }
+
+    await actor.update({
+        "system.health":health
+    });
+}
+
+
+const diff=successes-targetValue;
+
+
+let chat=`
+<h2>Angriffsvergleich</h2>
+
+<p><b>Angreifer:</b> ${ownActor.name}</p>
+<p><b>Ziel:</b> ${targetActor.name}</p>
+
+<p><b>Erfolge:</b> ${successes}</p>
+<p><b>Zielwert:</b> ${targetValue}</p>
+<p><b>Differenz:</b> ${diff}</p>
+
+<hr>
+`;
+
+
+if(diff>0){
+
+    const dmg=Math.ceil(diff/2);
+
+    await applySuperficialDamage(targetActor,dmg);
+
+    chat+=`
+    <p>
+    ${targetActor.name} erhält
+    <b>${dmg}</b>
+    oberflächlichen Schaden.
+    </p>`;
+}
+
+
+else if(diff===0){
+
+    await applySuperficialDamage(ownActor,1);
+    await applySuperficialDamage(targetActor,1);
+
+    chat+=`
+    <p>
+    Unentschieden.<br>
+    Beide erhalten <b>1</b>
+    oberflächlichen Schaden.
+    </p>`;
+}
+
+
+else{
+
+    const dmg=Math.ceil(Math.abs(diff)/2);
+
+    await applySuperficialDamage(ownActor,dmg);
+
+    chat+=`
+    <p>
+    ${ownActor.name} erhält
+    <b>${dmg}</b>
+    oberflächlichen Schaden.
+    </p>`;
+}
+
+
+await ChatMessage.create({
+    speaker:ChatMessage.getSpeaker({actor:ownActor}),
+    content:chat
+});
